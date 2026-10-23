@@ -30,6 +30,8 @@ pub struct Options {
     pub mute: bool,
     /// recompile the game with its update and mods, then quit.
     pub recompile: bool,
+    /// the game's update, in place of one found beside it.
+    pub update: Option<String>,
 }
 
 const USAGE: &str = "\
@@ -63,6 +65,8 @@ options:
   --recompile                      recompile the game with its update and
                                    mods, as Recompile in the library does,
                                    then quit
+  --update <cia>                   the game's update, decrypted, in place of
+                                   one found beside it
   --data <dir>                     where saves live (default: the system's
                                    place for data, ~/.local/share/zakuro or
                                    %APPDATA%\\zakuro)
@@ -88,6 +92,7 @@ pub fn parse() -> Result<Options, String> {
         interpreter: false,
         mute: false,
         recompile: false,
+        update: None,
     };
 
     let mut args = std::env::args().skip(1);
@@ -133,6 +138,9 @@ pub fn parse() -> Result<Options, String> {
             "--interpreter" => options.interpreter = true,
             "--mute" => options.mute = true,
             "--recompile" => options.recompile = true,
+            "--update" => {
+                options.update = Some(args.next().ok_or("--update needs a path")?);
+            }
             "--profile" => options.profile = true,
             "--test-pattern" => options.test_pattern = true,
             other if other.starts_with('-') => {

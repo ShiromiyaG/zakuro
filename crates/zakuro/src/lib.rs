@@ -636,15 +636,40 @@ impl App {
             eprintln!("zakuro: {} is not a game the library can play", rom.display());
             return false;
         };
+        // a compiler there is, or Zig, downloaded once the way the library
+        // offers to
+        let tools = zig::tools_dir(self.data_dir.as_deref());
         let compiler = match recomp3ds::compile::check(None) {
             Ok(compiler) => compiler,
-            Err(error) => {
-                eprintln!("zakuro: recompiling needs a C compiler: {error}");
-                return false;
-            }
+            Err(error) => match tools.as_deref().and_then(zig::installed) {
+                Some(compiler) => compiler,
+                None => match tools {
+                    Some(tools) if zig::download_size().is_some() && zig::can_download() => {
+                        println!("no C compiler ({error}), downloading Zig");
+                        let shown = std::sync::atomic::AtomicU32::new(0);
+                        let arrived = |fraction: f32| {
+                            let percent = (fraction * 100.0) as u32;
+                            if shown.swap(percent, std::sync::atomic::Ordering::Relaxed) != percent {
+                                println!("downloaded {percent}%");
+                            }
+                        };
+                        match zig::download(&tools, &arrived, &std::sync::atomic::AtomicBool::new(false)) {
+                            Ok(compiler) => compiler,
+                            Err(error) => {
+                                eprintln!("zakuro: could not download Zig: {error}");
+                                return false;
+                            }
+                        }
+                    }
+                    _ => {
+                        eprintln!("zakuro: recompiling needs a C compiler: {error}");
+                        return false;
+                    }
+                },
+            },
         };
-        let update = game.update.as_ref().map(|update| update.path.as_path());
-        match recompile::run(&game.path, update, game.program_id, &game.name, self.data_dir.as_deref(), compiler) {
+        let update = self.update_for(game);
+        match recompile::run(&game.path, update.as_deref(), game.program_id, &game.name, self.data_dir.as_deref(), compiler) {
             Ok(library) => {
                 println!("{} recompiled into {}", game.name, library.display());
                 true
@@ -654,6 +679,12 @@ impl App {
                 false
             }
         }
+    }
+
+    /// the update for game, the one --update names or else the one found
+    /// beside it.
+    fn update_for(&self, game: &library::Game) -> Option<PathBuf> {
+        self.options.update.as_ref().map(PathBuf::from).or_else(|| game.update.as_ref().map(|update| update.path.clone()))
     }
 
     /// starts the game at path, in place of any other.
@@ -670,7 +701,7 @@ impl App {
         // the update, DLC and Download Play child found with the game in
         // the library
         if let Some(game) = self.library.games.iter().find(|game| game.path == path) {
-            config.update = game.update.as_ref().map(|update| update.path.clone());
+            config.update = self.update_for(game);
             config.dlc = game.dlc.iter().map(|dlc| dlc.path.clone()).collect();
             config.dlp_child = game.dlp_child.as_ref().map(|child| child.path.clone());
         }
