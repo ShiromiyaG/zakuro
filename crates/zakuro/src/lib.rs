@@ -672,7 +672,8 @@ impl App {
             },
         };
         let update = self.update_for(game);
-        match recompile::run(&game.path, update.as_deref(), game.program_id, &game.name, self.data_dir.as_deref(), compiler) {
+        let hot = self.options.hot.as_ref().map(PathBuf::from);
+        match recompile::run(&game.path, update.as_deref(), game.program_id, &game.name, self.data_dir.as_deref(), compiler, hot.as_deref()) {
             Ok(library) => {
                 println!("{} recompiled into {}", game.name, library.display());
                 true
@@ -724,7 +725,10 @@ impl App {
             }
             None => None,
         };
-        let system = loader::load(path, config).map_err(|error| format!("could not open {}, {error}", path.display()))?;
+        let mut system = loader::load(path, config).map_err(|error| format!("could not open {}, {error}", path.display()))?;
+        if let Some(file) = &self.options.heat {
+            system.heat = Some(zakuro_core::heat::Heat::new(PathBuf::from(file)));
+        }
         let outdated = system.recompiled.as_ref().is_some_and(|code| code.outdated());
         let name = self
             .library

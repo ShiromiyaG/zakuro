@@ -105,7 +105,7 @@ impl Job {
                 }
             };
             let result =
-                compiler.and_then(|compiler| recompile(&rom, update.as_deref(), program_id, &game, data_dir.as_deref(), compiler, &stop, &events));
+                compiler.and_then(|compiler| recompile(&rom, update.as_deref(), program_id, &game, data_dir.as_deref(), compiler, None, &stop, &events));
             if let Ok(mut state) = progress.lock() {
                 state.stage = match result {
                     Ok(_) => Stage::Done,
@@ -137,7 +137,18 @@ impl Job {
 
 /// recompiles the game at rom on this thread, telling how it goes on the
 /// terminal, for --recompile.
-pub fn run(rom: &Path, update: Option<&Path>, program_id: u64, name: &str, data_dir: Option<&Path>, compiler: Compiler) -> Result<PathBuf, String> {
+/// with hot, Zakuro's heat for the game, it builds only the hottest
+/// functions, at full speed, for a game to be played soon.
+#[allow(clippy::too_many_arguments)]
+pub fn run(
+    rom: &Path,
+    update: Option<&Path>,
+    program_id: u64,
+    name: &str,
+    data_dir: Option<&Path>,
+    compiler: Compiler,
+    hot: Option<&Path>,
+) -> Result<PathBuf, String> {
     let events = |event: Event| match event {
         Event::Generated { files, bytes, overrides } => println!("wrote {files} C files, {} MiB, {overrides} overrides", bytes >> 20),
         Event::Note(note) => println!("{note}"),
@@ -146,7 +157,7 @@ pub fn run(rom: &Path, update: Option<&Path>, program_id: u64, name: &str, data_
         Event::Built { library, took } => println!("linked {} in {took:.0?}", library.display()),
         Event::Installed(path) => println!("installed {}", path.display()),
     };
-    recompile(rom, update, program_id, name, data_dir, compiler, &AtomicBool::new(false), &events)
+    recompile(rom, update, program_id, name, data_dir, compiler, hot, &AtomicBool::new(false), &events)
 }
 
 /// recompiles the game at rom, its code and its modules the way its update
@@ -159,13 +170,16 @@ fn recompile(
     name: &str,
     data_dir: Option<&Path>,
     compiler: Compiler,
+    hot: Option<&Path>,
     cancel: &AtomicBool,
     events: &(dyn Fn(Event) + Sync),
 ) -> Result<PathBuf, String> {
     let changes = Changes::read(rom, update, program_id, data_dir);
     let files = |path: &str| changes.as_ref()?.module(path);
     log::info!("recompiling {name} with {}", compiler.describe());
-    let mut options = build::Options { cancel: Some(cancel), compiler: Some(compiler), background: true, ..build::Options::default() };
+    // a hot build is waited on, a full one goes on while a game is played
+    let mut options =
+        build::Options { cancel: Some(cancel), compiler: Some(compiler), background: hot.is_none(), hot, ..build::Options::default() };
     if let Some(changes) = &changes {
         log::info!(
             "recompiling {name} with its update or mods, which change {}. the library replaces one made without them, and should they go, the functions they changed run in the interpreter",

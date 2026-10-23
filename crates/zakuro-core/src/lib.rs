@@ -6,6 +6,7 @@ pub mod cheats;
 pub mod enhancements;
 pub mod cro;
 pub mod download_play;
+pub mod heat;
 pub mod hints;
 pub mod idle;
 pub mod kernel;
@@ -219,6 +220,9 @@ pub struct System {
     pub recompiled: Option<recompiled::Library>,
     /// where the title ran in the interpreter despite the library.
     pub hints: Option<hints::Hints>,
+    /// where the title spends its time, by the place of the code, for
+    /// 3dsrecomp build --hot.
+    pub heat: Option<heat::Heat>,
     /// instructions the interpreter ran for want of recompiled code, and
     /// the ones recompiled code ran, to see how much the library covers.
     pub interpreted_instructions: u64,
@@ -297,6 +301,7 @@ impl System {
             idle,
             recompiled: None,
             hints: None,
+            heat: None,
             interpreted_instructions: 0,
             recompiled_instructions: 0,
         }
@@ -458,7 +463,7 @@ impl System {
         self.history[self.history_index] = pc | self.cpu.cpsr.thumb as u32;
         self.history_index = (self.history_index + 1) % HISTORY_LENGTH;
 
-        if self.profile.is_some() {
+        if self.profile.is_some() || self.heat.is_some() {
             self.sample();
         }
 
@@ -659,6 +664,9 @@ impl System {
         if let Some(profile) = &mut self.profile {
             *profile.entry((id, pc)).or_insert(0) += 1;
         }
+        if let Some(heat) = &mut self.heat {
+            heat.sample(pc, self.cpu.cpsr.thumb, &self.cro.modules);
+        }
     }
 
     /// writes back the result registers of a syscall that had blocked.
@@ -699,6 +707,9 @@ impl System {
         if self.frames.is_multiple_of(hints::SAVE_EVERY) {
             if let Some(hints) = &mut self.hints {
                 hints.save();
+            }
+            if let Some(heat) = &self.heat {
+                heat.save();
             }
         }
 
@@ -1254,6 +1265,9 @@ impl Drop for System {
     fn drop(&mut self) {
         if let Some(hints) = &mut self.hints {
             hints.save();
+        }
+        if let Some(heat) = &self.heat {
+            heat.save();
         }
     }
 }

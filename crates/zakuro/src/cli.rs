@@ -26,6 +26,10 @@ pub struct Options {
     pub data: Option<String>,
     /// the settings file, instead of the usual one.
     pub settings: Option<String>,
+    /// where to keep where the game spends its time, for 3dsrecomp's --hot.
+    pub heat: Option<String>,
+    /// with --recompile, heat to build only the hottest functions by.
+    pub hot: Option<String>,
     /// interpret everything, whatever recompiled code there is.
     pub interpreter: bool,
     /// play no sound.
@@ -75,6 +79,12 @@ options:
   --settings <file>                keep the settings in this file instead of
                                    the usual one, for a program running
                                    Zakuro with settings of its own
+  --heat <file>                    add where the game spends its time to this
+                                   file, for 3dsrecomp build --hot (all of it
+                                   with --interpreter)
+  --hot <file>                     with --recompile, build only the functions
+                                   that file's heat says the game spends
+                                   nearly all its time in, at full speed
   -h, --help                       show this message
 
 The system font cannot be generated: put a dump at sysdata/shared_font.bin, in
@@ -99,6 +109,8 @@ pub fn parse() -> Result<Options, String> {
         recompile: false,
         update: None,
         settings: None,
+        heat: None,
+        hot: None,
     };
 
     let mut args = std::env::args().skip(1);
@@ -143,6 +155,12 @@ pub fn parse() -> Result<Options, String> {
             }
             "--settings" => {
                 options.settings = Some(args.next().ok_or("--settings needs a file")?);
+            }
+            "--heat" => {
+                options.heat = Some(args.next().ok_or("--heat needs a file")?);
+            }
+            "--hot" => {
+                options.hot = Some(args.next().ok_or("--hot needs a file")?);
             }
             "--interpreter" => options.interpreter = true,
             "--mute" => options.mute = true,
