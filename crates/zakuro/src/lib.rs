@@ -704,7 +704,17 @@ impl App {
         };
         let update = self.update_for(game);
         let hot = self.options.hot.as_ref().map(PathBuf::from);
-        match recompile::run(&game.path, update.as_deref(), game.program_id, &game.name, self.data_dir.as_deref(), compiler, hot.as_deref()) {
+        let overrides = self.options.overrides.as_ref().map(PathBuf::from);
+        match recompile::run(
+            &game.path,
+            update.as_deref(),
+            game.program_id,
+            &game.name,
+            self.data_dir.as_deref(),
+            compiler,
+            hot.as_deref(),
+            overrides.as_deref(),
+        ) {
             Ok(library) => {
                 println!("{} recompiled into {}", game.name, library.display());
                 true

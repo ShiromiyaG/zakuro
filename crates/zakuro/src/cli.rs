@@ -30,6 +30,9 @@ pub struct Options {
     pub heat: Option<String>,
     /// with --recompile, heat to build only the hottest functions by.
     pub hot: Option<String>,
+    /// with --recompile, C files of functions written by hand, or a folder
+    /// of them, see 3dsrecomp's docs/overrides.md.
+    pub overrides: Option<String>,
     /// with --headless, a folder to save both screens to every
     /// screenshot_every frames.
     pub screenshots: Option<String>,
@@ -89,6 +92,8 @@ options:
   --hot <file>                     with --recompile, build only the functions
                                    that file's heat says the game spends
                                    nearly all its time in, at full speed
+  --overrides <file or dir>        with --recompile, functions written by hand
+                                   in C that replace the game's
   --screenshots <dir>              with --headless, save both screens as PNGs
                                    there every --screenshot-every frames
                                    (default 600); needs --rasterizer software
@@ -118,6 +123,7 @@ pub fn parse() -> Result<Options, String> {
         settings: None,
         heat: None,
         hot: None,
+        overrides: None,
         screenshots: None,
         screenshot_every: 600,
     };
@@ -170,6 +176,9 @@ pub fn parse() -> Result<Options, String> {
             }
             "--hot" => {
                 options.hot = Some(args.next().ok_or("--hot needs a file")?);
+            }
+            "--overrides" => {
+                options.overrides = Some(args.next().ok_or("--overrides needs a file or a folder")?);
             }
             "--screenshots" => {
                 options.screenshots = Some(args.next().ok_or("--screenshots needs a folder")?);
