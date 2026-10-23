@@ -3088,7 +3088,7 @@ dependencies = [
 [[package]]
 name = "recomp-abi"
 version = "0.1.0"
-source = "git+https://github.com/ShiromiyaG/3dsrecomp?branch=cli-mods#6fd7e02e7aff6017bc638aaebc9a43a05c464c1a"
+source = "git+https://github.com/ShiromiyaG/3dsrecomp?branch=cli-mods#fe51cb395d645738d37a9f2b1437c3d0142b4efb"
 
 [[package]]
 name = "recomp-abi"
@@ -3101,7 +3101,7 @@ dependencies = [
 [[package]]
 name = "recomp3ds"
 version = "0.1.0"
-source = "git+https://github.com/ShiromiyaG/3dsrecomp?branch=cli-mods#6fd7e02e7aff6017bc638aaebc9a43a05c464c1a"
+source = "git+https://github.com/ShiromiyaG/3dsrecomp?branch=cli-mods#fe51cb395d645738d37a9f2b1437c3d0142b4efb"
 dependencies = [
  "libc",
  "recomp-abi 0.1.0 (git+https://github.com/ShiromiyaG/3dsrecomp?branch=cli-mods)",
