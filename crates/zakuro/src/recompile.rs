@@ -135,6 +135,20 @@ impl Job {
     }
 }
 
+/// recompiles the game at rom on this thread, telling how it goes on the
+/// terminal, for --recompile.
+pub fn run(rom: &Path, update: Option<&Path>, program_id: u64, name: &str, data_dir: Option<&Path>, compiler: Compiler) -> Result<PathBuf, String> {
+    let events = |event: Event| match event {
+        Event::Generated { files, bytes, overrides } => println!("wrote {files} C files, {} MiB, {overrides} overrides", bytes >> 20),
+        Event::Note(note) => println!("{note}"),
+        Event::Compiled { done, total } if done == total || done % 100 == 0 => println!("compiled {done}/{total}"),
+        Event::Compiled { .. } => {}
+        Event::Built { library, took } => println!("linked {} in {took:.0?}", library.display()),
+        Event::Installed(path) => println!("installed {}", path.display()),
+    };
+    recompile(rom, update, program_id, name, data_dir, compiler, &AtomicBool::new(false), &events)
+}
+
 /// recompiles the game at rom, its code and its modules the way its update
 /// and its mods in data_dir leave them when they change any.
 #[allow(clippy::too_many_arguments)]

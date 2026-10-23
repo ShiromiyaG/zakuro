@@ -68,6 +68,14 @@ impl Library {
         self.scanning = Some(receive);
     }
 
+    /// looks through folder and waits for it, for a game started before
+    /// the library is shown.
+    pub fn scan_now(&mut self, folder: &Path) {
+        (self.games, self.children) = scan(folder, self.data_dir.as_deref());
+        self.scanning = None;
+        self.changed = true;
+    }
+
     pub fn is_scanning(&self) -> bool {
         self.scanning.is_some()
     }

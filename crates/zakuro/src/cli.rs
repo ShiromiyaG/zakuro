@@ -28,6 +28,8 @@ pub struct Options {
     pub interpreter: bool,
     /// play no sound.
     pub mute: bool,
+    /// recompile the game with its update and mods, then quit.
+    pub recompile: bool,
 }
 
 const USAGE: &str = "\
@@ -58,6 +60,9 @@ options:
   --interpreter                    interpret everything, even with recompiled
                                    code around
   --mute                           play no sound
+  --recompile                      recompile the game with its update and
+                                   mods, as Recompile in the library does,
+                                   then quit
   --data <dir>                     where saves live (default: the system's
                                    place for data, ~/.local/share/zakuro or
                                    %APPDATA%\\zakuro)
@@ -82,6 +87,7 @@ pub fn parse() -> Result<Options, String> {
         data: None,
         interpreter: false,
         mute: false,
+        recompile: false,
     };
 
     let mut args = std::env::args().skip(1);
@@ -126,6 +132,7 @@ pub fn parse() -> Result<Options, String> {
             }
             "--interpreter" => options.interpreter = true,
             "--mute" => options.mute = true,
+            "--recompile" => options.recompile = true,
             "--profile" => options.profile = true,
             "--test-pattern" => options.test_pattern = true,
             other if other.starts_with('-') => {
@@ -139,6 +146,10 @@ pub fn parse() -> Result<Options, String> {
     if options.headless.is_some() && options.rom.is_none() && !options.test_pattern {
         print!("{USAGE}");
         return Err("--headless needs a game".to_owned());
+    }
+    if options.recompile && options.rom.is_none() {
+        print!("{USAGE}");
+        return Err("--recompile needs a game".to_owned());
     }
     Ok(options)
 }

@@ -113,6 +113,10 @@ pub fn run(linked: Option<Linked>) {
         resize_after_full_screen: false,
     };
 
+    if app.options.recompile {
+        std::process::exit(if app.recompile_now() { 0 } else { 1 });
+    }
+
     if let Some(frames) = app.options.headless {
         app.start();
         if let Some(game) = &mut app.game {
@@ -595,7 +599,8 @@ impl App {
             self.game = Some(Running::new(system, PathBuf::new(), "test pattern".to_owned()));
             self.paused = true;
         } else if let Some(rom) = self.options.rom.clone() {
-            if let Err(error) = self.play(Path::new(&rom)) {
+            let rom = self.find_beside(&rom);
+            if let Err(error) = self.play(&rom) {
                 eprintln!("zakuro: {error}");
                 std::process::exit(1);
             }
@@ -603,6 +608,46 @@ impl App {
         if self.options.profile {
             if let Some(game) = &mut self.game {
                 game.system.enable_profiler();
+            }
+        }
+    }
+
+    /// the game given on the command line, with the library holding the
+    /// folder it is in, so that the update and DLC beside it go with it as
+    /// they would from the library.
+    fn find_beside(&mut self, rom: &str) -> PathBuf {
+        let rom = std::path::absolute(rom).unwrap_or_else(|_| PathBuf::from(rom));
+        if let Some(folder) = rom.parent() {
+            self.library.scan_now(folder);
+        }
+        rom
+    }
+
+    /// recompiles the game given on the command line, with its update and
+    /// its mods, and waits for it. whether it worked.
+    fn recompile_now(&mut self) -> bool {
+        let Some(rom) = self.options.rom.clone() else { return false };
+        let rom = self.find_beside(&rom);
+        let Some(game) = self.library.games.iter().find(|game| game.path == rom) else {
+            eprintln!("zakuro: {} is not a game the library can play", rom.display());
+            return false;
+        };
+        let compiler = match recomp3ds::compile::check(None) {
+            Ok(compiler) => compiler,
+            Err(error) => {
+                eprintln!("zakuro: recompiling needs a C compiler: {error}");
+                return false;
+            }
+        };
+        let update = game.update.as_ref().map(|update| update.path.as_path());
+        match recompile::run(&game.path, update, game.program_id, &game.name, self.data_dir.as_deref(), compiler) {
+            Ok(library) => {
+                println!("{} recompiled into {}", game.name, library.display());
+                true
+            }
+            Err(error) => {
+                eprintln!("zakuro: recompiling {} failed: {error}", game.name);
+                false
             }
         }
     }
