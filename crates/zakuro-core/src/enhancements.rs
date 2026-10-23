@@ -96,6 +96,18 @@ mod tests {
         assert_eq!(cheats[0].notes.len(), 2);
     }
 
+    /// Ultra Sun and Ultra Moon take the cartridge's 60 FPS code on their
+    /// last update, 1.2, whose version reads 2.0.
+    #[test]
+    fn ultra_sun_and_moon_have_60_fps_on_update_1_2() {
+        for id in [0x0004_0000_001B_5000, 0x0004_0000_001B_5100] {
+            let cartridge = for_title(id, "rev0");
+            let updated = for_title(id, "update 2.0");
+            assert_eq!(updated.len(), 1);
+            assert_eq!(updated[0].lines, cartridge[0].lines);
+        }
+    }
+
     #[test]
     fn every_listed_code_is_code() {
         for line in LIST.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with('=') && !line.contains('|')) {

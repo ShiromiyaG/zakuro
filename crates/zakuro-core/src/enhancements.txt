@@ -62,9 +62,17 @@ D2000000 00000000
 D3000000 30000000
 23F67FE9 00000000
 D2000000 00000000
+60 FPS | update 2.0 | Reshiban | The whole game runs twice as fast with it. The same code as for the cartridge, which works as it is on update 1.2.
+D3000000 30000000
+23F67FE9 00000000
+D2000000 00000000
 
 = 00040000001B5100 Pokémon Ultra Moon (USA)
 60 FPS | rev0 | Reshiban | The whole game runs twice as fast with it.
+D3000000 30000000
+23F67FE9 00000000
+D2000000 00000000
+60 FPS | update 2.0 | Reshiban | The whole game runs twice as fast with it. The same code as for the cartridge, which works as it is on update 1.2.
 D3000000 30000000
 23F67FE9 00000000
 D2000000 00000000
