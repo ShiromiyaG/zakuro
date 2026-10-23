@@ -608,8 +608,21 @@ fn write(path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::write(path, text)
 }
 
-/// the system's place for a program's settings.
+/// the settings file --settings names, in place of the usual one.
+static FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// keeps the settings in file from now on, for a program that runs Zakuro
+/// with settings of its own. set before the settings are loaded.
+pub fn use_file(file: PathBuf) {
+    let _ = FILE.set(file);
+}
+
+/// where the settings are kept: the file --settings names, or else the
+/// system's place for a program's settings.
 fn path() -> Option<PathBuf> {
+    if let Some(file) = FILE.get() {
+        return Some(file.clone());
+    }
     let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty()).map(PathBuf::from);
     let dir = if cfg!(windows) {
         var("APPDATA")

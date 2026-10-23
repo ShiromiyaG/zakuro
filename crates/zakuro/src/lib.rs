@@ -51,6 +51,9 @@ pub fn run(linked: Option<Linked>) {
             std::process::exit(2);
         }
     };
+    if let Some(file) = &options.settings {
+        settings::use_file(PathBuf::from(file));
+    }
     let mut settings = Settings::load();
     // the console's own number, made the first time and kept, which tells
     // it apart from others over local wireless

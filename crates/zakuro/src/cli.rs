@@ -24,6 +24,8 @@ pub struct Options {
     pub hardware_rasterizer: Option<bool>,
     /// where saves live, instead of the usual place.
     pub data: Option<String>,
+    /// the settings file, instead of the usual one.
+    pub settings: Option<String>,
     /// interpret everything, whatever recompiled code there is.
     pub interpreter: bool,
     /// play no sound.
@@ -70,6 +72,9 @@ options:
   --data <dir>                     where saves live (default: the system's
                                    place for data, ~/.local/share/zakuro or
                                    %APPDATA%\\zakuro)
+  --settings <file>                keep the settings in this file instead of
+                                   the usual one, for a program running
+                                   Zakuro with settings of its own
   -h, --help                       show this message
 
 The system font cannot be generated: put a dump at sysdata/shared_font.bin, in
@@ -93,6 +98,7 @@ pub fn parse() -> Result<Options, String> {
         mute: false,
         recompile: false,
         update: None,
+        settings: None,
     };
 
     let mut args = std::env::args().skip(1);
@@ -134,6 +140,9 @@ pub fn parse() -> Result<Options, String> {
             }
             "--data" => {
                 options.data = Some(args.next().ok_or("--data needs a directory")?);
+            }
+            "--settings" => {
+                options.settings = Some(args.next().ok_or("--settings needs a file")?);
             }
             "--interpreter" => options.interpreter = true,
             "--mute" => options.mute = true,
