@@ -120,7 +120,7 @@ pub fn run(linked: Option<Linked>) {
     if let Some(frames) = app.options.headless {
         app.start();
         if let Some(game) = &mut app.game {
-            run_headless(&mut game.system, frames);
+            run_headless(&mut game.system, game.replay.as_mut(), frames);
         }
         return;
     }
@@ -271,11 +271,15 @@ fn paint_test_pattern(config: Config) -> System {
     system
 }
 
-fn run_headless(system: &mut System, frames: u64) {
+fn run_headless(system: &mut System, mut replay: Option<&mut zakuro_core::replay::Replay>, frames: u64) {
     let start = Instant::now();
     let mut outcome = FrameOutcome::Completed;
     let mut ran = 0;
-    for _ in 0..frames {
+    for frame in 0..frames {
+        // a recording, ZAKURO_REPLAY, plays back here as in a window
+        if let Some(replay) = replay.as_deref_mut() {
+            system.set_input(replay.input(frame));
+        }
         outcome = system.run_frame();
         ran += 1;
         if outcome != FrameOutcome::Completed {
