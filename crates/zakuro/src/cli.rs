@@ -30,6 +30,10 @@ pub struct Options {
     pub heat: Option<String>,
     /// with --recompile, heat to build only the hottest functions by.
     pub hot: Option<String>,
+    /// with --headless, a folder to save both screens to every
+    /// screenshot_every frames.
+    pub screenshots: Option<String>,
+    pub screenshot_every: u64,
     /// interpret everything, whatever recompiled code there is.
     pub interpreter: bool,
     /// play no sound.
@@ -85,6 +89,9 @@ options:
   --hot <file>                     with --recompile, build only the functions
                                    that file's heat says the game spends
                                    nearly all its time in, at full speed
+  --screenshots <dir>              with --headless, save both screens as PNGs
+                                   there every --screenshot-every frames
+                                   (default 600); needs --rasterizer software
   -h, --help                       show this message
 
 The system font cannot be generated: put a dump at sysdata/shared_font.bin, in
@@ -111,6 +118,8 @@ pub fn parse() -> Result<Options, String> {
         settings: None,
         heat: None,
         hot: None,
+        screenshots: None,
+        screenshot_every: 600,
     };
 
     let mut args = std::env::args().skip(1);
@@ -161,6 +170,13 @@ pub fn parse() -> Result<Options, String> {
             }
             "--hot" => {
                 options.hot = Some(args.next().ok_or("--hot needs a file")?);
+            }
+            "--screenshots" => {
+                options.screenshots = Some(args.next().ok_or("--screenshots needs a folder")?);
+            }
+            "--screenshot-every" => {
+                let value = args.next().ok_or("--screenshot-every needs a frame count")?;
+                options.screenshot_every = value.parse().ok().filter(|&n| n > 0).ok_or(format!("'{value}' is not a frame count"))?;
             }
             "--interpreter" => options.interpreter = true,
             "--mute" => options.mute = true,

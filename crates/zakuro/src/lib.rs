@@ -123,7 +123,8 @@ pub fn run(linked: Option<Linked>) {
     if let Some(frames) = app.options.headless {
         app.start();
         if let Some(game) = &mut app.game {
-            run_headless(&mut game.system, game.replay.as_mut(), frames);
+            let screenshots = app.options.screenshots.as_ref().map(|dir| (PathBuf::from(dir), app.options.screenshot_every));
+            run_headless(&mut game.system, game.replay.as_mut(), frames, screenshots);
         }
         return;
     }
@@ -274,7 +275,17 @@ fn paint_test_pattern(config: Config) -> System {
     system
 }
 
-fn run_headless(system: &mut System, mut replay: Option<&mut zakuro_core::replay::Replay>, frames: u64) {
+fn run_headless(
+    system: &mut System,
+    mut replay: Option<&mut zakuro_core::replay::Replay>,
+    frames: u64,
+    screenshots: Option<(PathBuf, u64)>,
+) {
+    if let Some((dir, _)) = &screenshots {
+        if let Err(error) = std::fs::create_dir_all(dir) {
+            eprintln!("zakuro: could not create {}, {error}", dir.display());
+        }
+    }
     let start = Instant::now();
     let mut outcome = FrameOutcome::Completed;
     let mut ran = 0;
@@ -285,6 +296,11 @@ fn run_headless(system: &mut System, mut replay: Option<&mut zakuro_core::replay
         }
         outcome = system.run_frame();
         ran += 1;
+        if let Some((dir, every)) = &screenshots {
+            if ran % every == 0 {
+                save_screens(system, dir, ran);
+            }
+        }
         if outcome != FrameOutcome::Completed {
             break;
         }
@@ -301,6 +317,21 @@ fn run_headless(system: &mut System, mut replay: Option<&mut zakuro_core::replay
     }
     for (thread, pc, hits) in system.hot_spots(10) {
         println!("  hot {thread:<8} 0x{pc:08X} {hits}");
+    }
+}
+
+/// saves both screens as dir/<frame>-top.png and -bottom.png, from the
+/// software rasterizer's pictures.
+fn save_screens(system: &mut System, dir: &Path, frame: u64) {
+    for (screen, name) in [(Screen::Top, "top"), (Screen::Bottom, "bottom")] {
+        let (pixels, width, height) = system.read_screen_scaled(screen);
+        let path = dir.join(format!("{frame:06}-{name}.png"));
+        let saved = image::RgbaImage::from_raw(width, height, pixels.to_vec())
+            .ok_or_else(|| "the picture is not the size it says".to_owned())
+            .and_then(|picture| picture.save(&path).map_err(|error| error.to_string()));
+        if let Err(error) = saved {
+            eprintln!("zakuro: could not save {}, {error}", path.display());
+        }
     }
 }
 
