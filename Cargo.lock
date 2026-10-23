@@ -3088,6 +3088,11 @@ dependencies = [
 [[package]]
 name = "recomp-abi"
 version = "0.1.0"
+source = "git+https://github.com/ShiromiyaG/3dsrecomp?branch=cli-mods#6fd7e02e7aff6017bc638aaebc9a43a05c464c1a"
+
+[[package]]
+name = "recomp-abi"
+version = "0.1.0"
 source = "git+https://github.com/fearkov/3dsrecomp#c3f21f94ba50d688025febc8974ff348d471b587"
 dependencies = [
  "libloading",
@@ -3096,10 +3101,10 @@ dependencies = [
 [[package]]
 name = "recomp3ds"
 version = "0.1.0"
-source = "git+https://github.com/fearkov/3dsrecomp#c3f21f94ba50d688025febc8974ff348d471b587"
+source = "git+https://github.com/ShiromiyaG/3dsrecomp?branch=cli-mods#6fd7e02e7aff6017bc638aaebc9a43a05c464c1a"
 dependencies = [
  "libc",
- "recomp-abi",
+ "recomp-abi 0.1.0 (git+https://github.com/ShiromiyaG/3dsrecomp?branch=cli-mods)",
 ]
 
 [[package]]
@@ -4680,7 +4685,7 @@ dependencies = [
  "lz4_flex",
  "postcard",
  "rayon",
- "recomp-abi",
+ "recomp-abi 0.1.0 (git+https://github.com/fearkov/3dsrecomp)",
  "serde",
  "sha1",
  "symphonia-codec-aac",
