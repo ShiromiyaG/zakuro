@@ -621,15 +621,17 @@ impl Gpu {
     }
 
     /// draws the texture pack's pictures in place of the textures they
-    /// replace, or no pack's. only the host's GPU draws them, so a pack
-    /// waits for enable_hardware_renderer, and says whether it is drawn.
+    /// replace, or no pack's, and says whether it is drawn. the host's GPU
+    /// draws them at their own size, the software path at the size of the
+    /// textures they replace, so a pack set before enable_hardware_renderer
+    /// is set again after it.
     pub fn set_texture_pack(&mut self, pack: Option<std::sync::Arc<pack::Pack>>) -> bool {
         #[cfg(feature = "vulkan")]
-        let pack = pack.filter(|_| self.resources.hardware.is_some());
+        let software = self.resources.hardware.is_none();
         #[cfg(not(feature = "vulkan"))]
-        let pack = pack.filter(|_| false);
+        let software = true;
         let drawn = pack.is_some();
-        self.resources.textures.set_pack(pack);
+        self.resources.textures.set_pack(pack, software);
         drawn
     }
 

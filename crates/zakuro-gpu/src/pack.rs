@@ -651,10 +651,11 @@ fn halve(texels: &mut Vec<u8>, above: Level) -> Level {
 
 /// ZAKURO_TEXTURE_HASHES=<file> writes each texture's hashes there as it is
 /// first seen, its size and format, then by its bytes and as Citra uploaded
-/// it, to check them against a pack's names. ZAKURO_DUMP_TEXTURES=<folder>
+/// it, to check them against a pack's names, and the physical address it
+/// was read from. ZAKURO_DUMP_TEXTURES=<folder>
 /// saves each one there as Citra names a picture without a pack.json, at
 /// ZAKURO_DUMP_SCALE times its size, as a start for a pack.
-pub(crate) fn record(data: &[u8], texels: &[[u8; 4]], format: TextureFormat, width: u32, height: u32) {
+pub(crate) fn record(data: &[u8], texels: &[[u8; 4]], format: TextureFormat, width: u32, height: u32, address: u32) {
     /// the file, the folder, the scale, and the textures already seen.
     type Record = Mutex<(Option<std::fs::File>, Option<PathBuf>, u32, std::collections::HashSet<u64>)>;
     static RECORD: OnceLock<Record> = OnceLock::new();
@@ -681,7 +682,7 @@ pub(crate) fn record(data: &[u8], texels: &[[u8; 4]], format: TextureFormat, wid
         _ => (0..14).find(|&number| TextureFormat::from_raw(number) == format).unwrap_or(0),
     };
     if let Some(file) = file {
-        let _ = std::io::Write::write_all(file, format!("{width}x{height} {number} {bytes:016X} {laid_out:016X}\n").as_bytes());
+        let _ = std::io::Write::write_all(file, format!("{width}x{height} {number} {bytes:016X} {laid_out:016X} {address:08X}\n").as_bytes());
     }
     if let Some(dump) = dump.as_ref().filter(|_| width.is_power_of_two() && height.is_power_of_two()) {
         let path = dump.join(format!("tex1_{width}x{height}_{laid_out:016X}_{number}_mip0.png"));

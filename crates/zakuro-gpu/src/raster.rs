@@ -1088,6 +1088,10 @@ pub struct TextureCache {
     /// texture is laid out to hash it as Citra did.
     pack: Option<Arc<crate::pack::Pack>>,
     rows: Vec<u8>,
+    /// the software path draws with the pack's pictures itself, at the
+    /// size of the textures they replace, kept here by their hash once read.
+    software_pack: bool,
+    pictures: HashMap<u64, Arc<[[u8; 4]]>>,
 }
 
 type TextureKey = (u32, TextureFormat, u32, u32);
@@ -1112,10 +1116,34 @@ const CACHED_TEXELS: usize = 64 * 1024 * 1024;
 
 impl TextureCache {
     /// replaces textures with the pack's pictures from now on, or with none.
-    pub fn set_pack(&mut self, pack: Option<Arc<crate::pack::Pack>>) {
+    pub fn set_pack(&mut self, pack: Option<Arc<crate::pack::Pack>>, software: bool) {
         self.pack = pack;
+        self.software_pack = software;
+        self.pictures.clear();
         self.entries.clear();
         self.texels = 0;
+    }
+
+    /// the texels of a pack's picture at width x height, for the software
+    /// path, once it has been read: the picture's size of that, which the
+    /// pack made by halving it, as the texture's own would be.
+    fn picture(&mut self, material: &Arc<crate::pack::Material>, width: u32, height: u32) -> Option<Arc<[[u8; 4]]>> {
+        if let Some(texels) = self.pictures.get(&material.hash()) {
+            return (texels.len() == (width * height) as usize).then(|| texels.clone());
+        }
+        let picture = material.picture(u32::MAX)?;
+        let level = picture.levels.iter().find(|level| level.width == width && level.height == height).copied();
+        let texels: Arc<[[u8; 4]]> = match level {
+            Some(level) => picture.texels[level.offset..level.offset + (width * height * 4) as usize]
+                .as_chunks::<4>()
+                .0
+                .into(),
+            // a picture of another shape stays out
+            None => Arc::from([].as_slice()),
+        };
+        material.release();
+        self.pictures.insert(material.hash(), texels.clone());
+        (texels.len() == (width * height) as usize).then_some(texels)
     }
 
     /// lets go of every texture, memory having been put back as a saved
@@ -1208,9 +1236,9 @@ fn picture_for(
     key: TextureKey,
     rows: &mut Vec<u8>,
 ) -> Option<Arc<crate::pack::Material>> {
-    let (_, format, width, height) = key;
+    let (address, format, width, height) = key;
     if crate::pack::recording() {
-        crate::pack::record(data, texels, format, width, height);
+        crate::pack::record(data, texels, format, width, height, address);
     }
     pack?.find(data, format, width, height, rows)
 }
@@ -1387,6 +1415,12 @@ fn bind_texture<M: GpuMemory>(
                 cache.decoded(key, &data)
             }
         },
+    };
+
+    // the software path draws with a pack's picture in place of the texels
+    let texels = match replacement.as_ref().filter(|_| cache.software_pack && drawn.is_none()) {
+        Some(material) => cache.picture(material, width, height).unwrap_or(texels),
+        None => texels,
     };
 
     // filter mode in bit 1 (magnification) and 2 (minification), the wrap
