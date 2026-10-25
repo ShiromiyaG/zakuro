@@ -15,6 +15,8 @@ pub struct Keyboard {
     /// the C-stick's, the same way.
     c_stick: [bool; 4],
     touch: Option<(u16, u16)>,
+    /// a touch of the top screen, see InputState::top_touch.
+    top_touch: Option<(u16, u16)>,
     /// how the mouse tilts the console, see InputState::tilt.
     tilt: [f32; 2],
 }
@@ -35,6 +37,7 @@ impl Keyboard {
         self.circle = [false; 4];
         self.c_stick = [false; 4];
         self.touch = None;
+        self.top_touch = None;
         self.tilt = [0.0; 2];
     }
 
@@ -82,6 +85,11 @@ impl Keyboard {
         self.touch = position;
     }
 
+    /// touches the top screen there, or stops, in its pixels.
+    pub fn top_touch(&mut self, position: Option<(u16, u16)>) {
+        self.top_touch = position;
+    }
+
     /// records the tilt the mouse gives the console.
     pub fn tilt(&mut self, tilt: [f32; 2]) {
         self.tilt = tilt;
@@ -100,6 +108,7 @@ impl Keyboard {
             c_stick_x: axis(c_right, c_left),
             c_stick_y: axis(c_up, c_down),
             touch: self.touch,
+            top_touch: self.top_touch,
             tilt: self.tilt,
         }
     }

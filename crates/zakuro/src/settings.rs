@@ -492,6 +492,10 @@ pub struct Settings {
     pub background_opacity: f32,
     pub keys: Keys,
     pub pad: PadButtons,
+    /// a controller's right stick moves the pointer, rather than being the
+    /// C-stick, and clicking it touches where the pointer is: for games
+    /// played on one screen whose touch screen things are shown on the top.
+    pub pointer_stick: bool,
     /// the enhancements turned on, by name, for each game by its title id.
     pub enhancements: std::collections::BTreeMap<String, Vec<String>>,
     /// what the console's cameras see, and the picture when it is one.
@@ -535,6 +539,7 @@ impl Default for Settings {
             background_opacity: 0.35,
             keys: Keys::default(),
             pad: PadButtons::default(),
+            pointer_stick: false,
             enhancements: std::collections::BTreeMap::new(),
             camera: CameraSource::Webcam,
             camera_picture: None,

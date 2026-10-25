@@ -7,6 +7,9 @@ use zakuro_fs::{MemoryType, Title};
 use crate::memory::{self, MemoryState, Permission};
 use crate::{Config, System};
 
+/// the least the decomp's segment takes, whatever its size now.
+const DECOMP_ROOM: u32 = 0x10_0000;
+
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
     #[error(transparent)]
@@ -178,6 +181,7 @@ pub fn load(path: impl AsRef<std::path::Path>, mut config: Config) -> Result<Sys
                         "{stale} functions changed since the game was recompiled, by a mod or in another version of the game, they run in the interpreter"
                     );
                 }
+                library.place(crate::decomp::NAME, decomp_base(&system), &mut system.memory);
                 system.recompiled = Some(library);
                 let text = exheader_text(&title);
                 system.hints = Some(crate::hints::Hints::new(&path, text));
@@ -204,11 +208,10 @@ pub fn load(path: impl AsRef<std::path::Path>, mut config: Config) -> Result<Sys
     }
     if let Some(data_dir) = system.config.data_dir.as_deref().filter(|_| system.config.texture_packs) {
         let dir = crate::mods::textures(data_dir, title.program_id());
-        if !on_gpu {
-            if std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some()) {
-                log::warn!("the texture pack in {} needs the 3D drawn on the GPU, it is left out", dir.display());
+        if let Some(pack) = zakuro_gpu::pack::Pack::open(&dir) {
+            if !on_gpu {
+                log::info!("the texture pack is drawn at the textures' own sizes, the 3D being drawn in software");
             }
-        } else if let Some(pack) = zakuro_gpu::pack::Pack::open(&dir) {
             system.gpu.set_texture_pack(Some(std::sync::Arc::new(pack)));
         }
     }
@@ -249,9 +252,15 @@ pub fn swap_recompiled(system: &mut System, path: &std::path::Path) -> Result<()
     for module in &system.cro.modules {
         library.place(&module.name, module.base, &mut system.memory);
     }
+    library.place(crate::decomp::NAME, decomp_base(system), &mut system.memory);
     system.hints = Some(crate::hints::Hints::new(path, text));
     system.recompiled = Some(library);
     Ok(())
+}
+
+/// where the code written apart from the title is loaded, zero without it.
+fn decomp_base(system: &System) -> u32 {
+    system.config.decomp.as_deref().and_then(|dir| crate::decomp::Decomp::read(dir).ok()).map_or(0, |decomp| decomp.base)
 }
 
 /// where the executable's code is.
@@ -335,8 +344,27 @@ fn map_special_pages(system: &mut System, app_bytes: u32) {
 
 /// maps the code segments, saying whether a mod changed them.
 fn map_code(system: &mut System, title: &Title) -> Result<bool, LoadError> {
-    let (code, modded) = crate::mods::code(title, system.config.data_dir.as_deref())?;
+    let (mut code, mut modded) = crate::mods::code(title, system.config.data_dir.as_deref())?;
     let exheader = &title.exheader;
+    let decomp = match &system.config.decomp {
+        Some(dir) => match crate::decomp::Decomp::read(dir) {
+            Ok(decomp) => Some(decomp),
+            Err(error) => {
+                log::warn!("decomp: {error}, going on without it");
+                None
+            }
+        },
+        None => None,
+    };
+    if let Some(decomp) = &decomp {
+        system.decomp_module_hooks = decomp.module_hooks.clone();
+        system.decomp_module_imports = decomp.module_imports.clone();
+    }
+    if let Some(decomp) = decomp.as_ref().filter(|_| !system.config.decomp_check) {
+        decomp.patch(exheader.text.address, &mut code);
+        // the text segment is not the game's own now
+        modded |= !decomp.hooks.is_empty();
+    }
 
     let segments = [
         (".text", exheader.text, Permission::RX, 0u32),
@@ -391,6 +419,24 @@ fn map_code(system: &mut System, title: &Title) -> Result<bool, LoadError> {
             info.address,
             info.size
         );
+    }
+
+    if let Some(decomp) = &decomp {
+        // room to grow, so a state saved now still takes a later build
+        let size = zakuro_common::bits::align_up(decomp.code.len() as u32, PAGE_SIZE).max(DECOMP_ROOM);
+        let block = system.memory.phys.allocate_top(system.kernel.memory_region, size).expect("FCRAM for the decomp");
+        system.memory.map(decomp.base, block.addr, size, Permission::RW.union(Permission::EXECUTE), MemoryState::Code);
+        system.memory.zero_physical(block.addr, size);
+        system.memory.write_physical(block.addr, &decomp.code);
+        log::info!("decomp: {} KiB at 0x{:08X}, {} functions replaced", decomp.code.len() / 1024, decomp.base, decomp.hooks.len());
+        if system.config.decomp_check {
+            let mut check = crate::decomp_check::Check::new(decomp.hooks.clone(), decomp.returns.clone(), decomp.base, size);
+            if system.config.decomp_capture {
+                check.capture = Some(Default::default());
+            }
+            system.decomp_check = Some(Box::new(check));
+            log::info!("decomp: checked against the title's code, not jumped to");
+        }
     }
 
     // BSS starts right where .data's bytes end, in the rest of its last page,

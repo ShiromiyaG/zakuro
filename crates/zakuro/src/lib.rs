@@ -54,6 +54,12 @@ pub fn run(linked: Option<Linked>) {
     if let Some(file) = &options.settings {
         settings::use_file(PathBuf::from(file));
     }
+    if let Some(spec) = &options.decomp_exhaustive {
+        std::process::exit(decomp_exhaustive(Path::new(spec), options.decomp_code.as_deref(), options.decomp.as_deref()));
+    }
+    if let Some(file) = &options.decomp_replay {
+        std::process::exit(decomp_replay(Path::new(file), options.decomp.as_deref(), options.decomp_fuzz));
+    }
     let mut settings = Settings::load();
     // the console's own number, made the first time and kept, which tells
     // it apart from others over local wireless
@@ -73,7 +79,11 @@ pub fn run(linked: Option<Linked>) {
 
     let mut app = App {
         keyboard: Keyboard::new(settings.keys.clone()),
-        gamepads: gamepad::Gamepads::new(settings.pad.clone()),
+        gamepads: {
+            let mut gamepads = gamepad::Gamepads::new(settings.pad.clone());
+            gamepads.set_pointer(settings.pointer_stick);
+            gamepads
+        },
         scale: options.scale.unwrap_or(settings.scale).max(1),
         layout: settings.layout,
         top_shape: settings.top_shape,
@@ -96,6 +106,8 @@ pub fn run(linked: Option<Linked>) {
         mouse_down: false,
         tilting_from: None,
         cursor: (0.0, 0.0),
+        pad_touching: false,
+        pointer_moved: Instant::now(),
         last_title_update: Instant::now(),
         next_frame: Instant::now(),
         skipped: 0,
@@ -124,7 +136,26 @@ pub fn run(linked: Option<Linked>) {
         app.start();
         if let Some(game) = &mut app.game {
             let screenshots = app.options.screenshots.as_ref().map(|dir| (PathBuf::from(dir), app.options.screenshot_every));
-            run_headless(&mut game.system, game.replay.as_mut(), frames, screenshots);
+            if let Some(file) = &app.options.load_state {
+                let loaded = std::fs::read(file).map_err(|error| error.to_string()).and_then(|bytes| game.system.load_state(&bytes));
+                if let Err(error) = loaded {
+                    eprintln!("zakuro: could not load {file}, {error}");
+                    std::process::exit(1);
+                }
+                println!("loaded the state, at frame {}", game.system.frames);
+            }
+            if let Some(runs) = app.options.decomp_synth {
+                let romfs = PathBuf::from(app.options.decomp_romfs.clone().unwrap_or_default());
+                std::process::exit(decomp_synth(&mut game.system, &romfs, runs));
+            }
+            run_headless(&mut game.system, game.replay.as_mut(), frames, screenshots, app.options.save_state.clone(), app.options.memory_hashes.clone(), app.options.dump_memory.clone());
+            let capture = game.system.decomp_check.as_ref().and_then(|check| check.capture.as_ref());
+            if let (Some(capture), Some(file)) = (capture, &app.options.decomp_capture) {
+                match capture.write(Path::new(file)) {
+                    Ok(()) => println!("decomp capture: {} samples in {file}", capture.samples.len()),
+                    Err(error) => eprintln!("zakuro: could not write the samples, {error}"),
+                }
+            }
         }
         return;
     }
@@ -275,27 +306,150 @@ fn paint_test_pattern(config: Config) -> System {
     system
 }
 
+/// --decomp-replay: both codes again on the samples, a line for each
+/// function, and the instructions of the title's each covered.
+/// --decomp-exhaustive: both codes on every input of the spec, a line for
+/// each function, as --decomp-replay prints them.
+fn decomp_exhaustive(spec: &Path, code: Option<&str>, dir: Option<&str>) -> i32 {
+    let (Some(code), Some(dir)) = (code, dir) else {
+        eprintln!("zakuro: --decomp-exhaustive needs --decomp and --decomp-code");
+        return 2;
+    };
+    let result = std::fs::read_to_string(spec)
+        .map_err(|error| format!("{}: {error}", spec.display()))
+        .and_then(|spec| Ok((spec, std::fs::read(code).map_err(|error| format!("{code}: {error}"))?)))
+        .and_then(|(spec, code)| {
+            let decomp = zakuro_core::decomp::Decomp::read(Path::new(dir))?;
+            zakuro_core::decomp_check::exhaustive(&spec, &code, &decomp)
+        });
+    let (results, told) = match result {
+        Ok(result) => result,
+        Err(error) => {
+            eprintln!("zakuro: {error}");
+            return 2;
+        }
+    };
+    for line in &told {
+        println!("{line}");
+    }
+    for (entry, r) in &results {
+        println!("decomp exhaustive 0x{entry:08X}: {} inputs, {} same, {} differ, {} incomplete", r.samples, r.same, r.differ, r.incomplete);
+        let covered: Vec<String> = r.covered.iter().map(|pc| format!("{pc:08X}")).collect();
+        println!("decomp cover 0x{entry:08X} {}", covered.join(" "));
+    }
+    i32::from(results.values().any(|r| r.differ > 0))
+}
+
+fn decomp_synth(system: &mut zakuro_core::System, romfs: &Path, runs: u32) -> i32 {
+    let (results, notes) = zakuro_core::decomp_synth::synthesize(system, romfs, runs, 0x5017_1CE5);
+    for note in &notes {
+        println!("decomp synth: {note}");
+    }
+    let module_of = |addr: u32| {
+        system.cro.modules.iter().find(|m| (m.base..m.base + m.size).contains(&(addr & !1))).map(|m| (m.name.trim_end_matches(".cro").to_owned(), addr - m.base))
+    };
+    for (entry, r) in &results {
+        for line in &r.told {
+            println!("{line}");
+        }
+        if let Some((module, offset)) = module_of(*entry) {
+            println!("decomp module 0x{entry:08X} {module}.cro:0x{offset:08X}");
+        }
+        println!("decomp synth 0x{entry:08X}: {} runs, {} same, {} differ, {} incomplete ({} live objects)", r.runs, r.same, r.differ, r.incomplete, r.objects);
+    }
+    i32::from(results.values().any(|r| r.differ > 0))
+}
+
+fn decomp_replay(file: &Path, dir: Option<&str>, fuzz: u32) -> i32 {
+    let Some(dir) = dir else {
+        eprintln!("zakuro: --decomp-replay needs --decomp");
+        return 2;
+    };
+    let result = zakuro_core::decomp::Decomp::read(Path::new(dir)).and_then(|decomp| zakuro_core::decomp_check::replay(file, &decomp, fuzz));
+    let (results, told) = match result {
+        Ok(result) => result,
+        Err(error) => {
+            eprintln!("zakuro: {error}");
+            return 2;
+        }
+    };
+    for line in &told {
+        println!("{line}");
+    }
+    for (entry, r) in &results {
+        if let Some(module) = &r.module {
+            println!("decomp module 0x{entry:08X} {module}");
+        }
+        println!("decomp replay 0x{entry:08X}: {} samples, {} same, {} differ, {} incomplete", r.samples, r.same, r.differ, r.incomplete);
+        let covered: Vec<String> = r.covered.iter().map(|pc| format!("{pc:08X}")).collect();
+        println!("decomp cover 0x{entry:08X} {}", covered.join(" "));
+        if r.fuzzed > 0 {
+            println!("decomp fuzz 0x{entry:08X}: {} runs, {} same, {} differ, {} incomplete", r.fuzzed, r.fuzz_same, r.fuzz_differ, r.fuzz_incomplete);
+            let covered: Vec<String> = r.fuzz_covered.iter().map(|pc| format!("{pc:08X}")).collect();
+            println!("decomp fuzz cover 0x{entry:08X} {}", covered.join(" "));
+        }
+    }
+    i32::from(results.values().any(|r| r.differ > 0 || r.fuzz_differ > 0))
+}
+
 fn run_headless(
     system: &mut System,
     mut replay: Option<&mut zakuro_core::replay::Replay>,
     frames: u64,
     screenshots: Option<(PathBuf, u64)>,
+    save_state: Option<(u64, String)>,
+    memory_hashes: Option<(u64, String)>,
+    dump_memory: Option<(u64, String)>,
 ) {
     if let Some((dir, _)) = &screenshots {
         if let Err(error) = std::fs::create_dir_all(dir) {
             eprintln!("zakuro: could not create {}, {error}", dir.display());
         }
     }
+    // lines of "<frame> <page> <hash>", in hex but the frame
+    let mut hashes = memory_hashes.and_then(|(every, file)| match std::fs::File::create(&file) {
+        Ok(out) => Some((every, std::io::BufWriter::new(out))),
+        Err(error) => {
+            eprintln!("zakuro: could not create {file}, {error}");
+            None
+        }
+    });
     let start = Instant::now();
     let mut outcome = FrameOutcome::Completed;
     let mut ran = 0;
-    for frame in 0..frames {
+    // a recording goes on from the frame a loaded state is at
+    let first = system.frames;
+    for frame in first..first + frames {
         // a recording, ZAKURO_REPLAY, plays back here as in a window
         if let Some(replay) = replay.as_deref_mut() {
             system.set_input(replay.input(frame));
         }
         outcome = system.run_frame();
         ran += 1;
+        if let Some((_, file)) = save_state.as_ref().filter(|(at, _)| *at == ran) {
+            match system.save_state().and_then(|bytes| std::fs::write(file, &bytes).map_err(|error| error.to_string())) {
+                Ok(()) => println!("saved the state after {ran} frames to {file}"),
+                Err(error) => eprintln!("zakuro: could not save the state, {error}"),
+            }
+        }
+        if let Some((_, out)) = hashes.as_mut().filter(|(every, _)| ran % *every == 0) {
+            use std::io::Write;
+            for (page, hash) in system.memory.page_hashes() {
+                let _ = writeln!(out, "{} {page:08X} {hash:016X}", first + ran);
+            }
+        }
+        if let Some((_, file)) = dump_memory.as_ref().filter(|(at, _)| *at == ran) {
+            let mut bytes = Vec::new();
+            for (page, _) in system.memory.page_hashes() {
+                let mut data = vec![0; 0x1000];
+                system.memory.read_bytes(page, &mut data);
+                bytes.extend(page.to_le_bytes());
+                bytes.extend(data);
+            }
+            if let Err(error) = std::fs::write(file, &bytes) {
+                eprintln!("zakuro: could not write {file}, {error}");
+            }
+        }
         if let Some((dir, every)) = &screenshots {
             if ran % every == 0 {
                 save_screens(system, dir, ran);
@@ -315,8 +469,16 @@ fn run_headless(
     if !system.fatal_errors.is_empty() {
         println!("fatal errors: {}", system.fatal_errors.join("; "));
     }
+    for line in system.decomp_check.as_ref().map(|check| check.report()).unwrap_or_default() {
+        println!("{line}");
+    }
     for (thread, pc, hits) in system.hot_spots(10) {
         println!("  hot {thread:<8} 0x{pc:08X} {hits}");
+    }
+    // and the hottest in modules, by module and offset, as Ghidra has them
+    let shown = std::env::var("ZAKURO_HOT").ok().and_then(|n| n.parse().ok()).unwrap_or(15);
+    for (thread, module, offset, hits) in system.hot_module_spots().into_iter().take(shown) {
+        println!("  hot {thread:<8} {module}.cro:0x{offset:X} {hits}");
     }
 }
 
@@ -410,6 +572,10 @@ struct App {
     /// the console while held.
     tilting_from: Option<(f32, f32)>,
     cursor: (f32, f32),
+    /// the right stick's click is down, touching where the pointer is.
+    pad_touching: bool,
+    /// when the right stick last moved the pointer.
+    pointer_moved: Instant,
     last_title_update: Instant,
     /// when the next frame is due. frames run to a schedule rather than one
     /// after another, so that a slow one is made up by those after it and
@@ -714,6 +880,7 @@ impl App {
             compiler,
             hot.as_deref(),
             overrides.as_deref(),
+            self.options.decomp.as_deref().map(Path::new),
         ) {
             Ok(library) => {
                 println!("{} recompiled into {}", game.name, library.display());
@@ -743,6 +910,9 @@ impl App {
         self.dlp_guest = None;
         let mut config = self.config();
         config.wireless_reboot = self.wireless_reboot.take();
+        config.decomp = self.options.decomp.as_ref().map(PathBuf::from);
+        config.decomp_check = self.options.decomp_check;
+        config.decomp_capture = self.options.decomp_capture.is_some();
         // the update, DLC and Download Play child found with the game in
         // the library
         if let Some(game) = self.library.games.iter().find(|game| game.path == path) {
@@ -898,27 +1068,53 @@ impl App {
         }
     }
 
+    /// moves the pointer with the right stick, and touches with its click,
+    /// when the settings say so.
+    fn stick_pointer(&mut self) {
+        // window pixels a second, the stick all the way over, at scale 1
+        const SPEED: f32 = 500.0;
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.pointer_moved).as_secs_f32().min(0.1);
+        self.pointer_moved = now;
+        let Some(window) = &self.window else { return };
+        let (dx, dy) = self.gamepads.pointer_motion();
+        if dx != 0.0 || dy != 0.0 {
+            let size = window.inner_size();
+            let speed = SPEED * window.scale_factor() as f32 * elapsed;
+            self.cursor.0 = (self.cursor.0 + dx * speed).clamp(0.0, size.width as f32 - 1.0);
+            self.cursor.1 = (self.cursor.1 + dy * speed).clamp(0.0, size.height as f32 - 1.0);
+            let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(self.cursor.0 as f64, self.cursor.1 as f64));
+            self.touch();
+        }
+        let touching = self.gamepads.pointer_touching() && !self.pointer_taken(false);
+        if touching != self.pad_touching {
+            self.pad_touching = touching;
+            self.mouse_down = touching;
+            self.touch();
+        }
+    }
+
     /// whether the pointer is busy with something other than the game.
     fn pointer_taken(&self, consumed: bool) -> bool {
         consumed || self.game.is_none() || self.menus.menu_open || self.gui.as_ref().is_some_and(Gui::wants_pointer)
     }
 
-    /// touches the bottom screen while the button is down over it.
+    /// touches the bottom screen while the button is down over it. over the
+    /// top screen it touches that, which titles whose recompiled code shows
+    /// the bottom screen's things there turn into a touch of the bottom one.
     fn touch(&mut self) {
         let Some(window) = &self.window else { return };
         let size = window.inner_size();
-        let (_, bottom) = layout(size.width, size.height, self.layout.screens(), self.top_shape.width(), self.settings.integer_scale);
-        // with the top screen alone there is nothing to touch
-        let Some(bottom) = bottom else {
-            self.keyboard.touch(None);
-            return;
+        let (top, bottom) = layout(size.width, size.height, self.layout.screens(), self.top_shape.width(), self.settings.integer_scale);
+        let at = |screen: Option<zakuro_gpu::Viewport>, width: f32, height: f32| {
+            let screen = screen?;
+            let (x, y) = (self.cursor.0 - screen.x, self.cursor.1 - screen.y);
+            let inside = self.mouse_down && x >= 0.0 && y >= 0.0 && x < screen.width && y < screen.height;
+            inside.then(|| ((x / screen.width * width) as u16, (y / screen.height * height) as u16))
         };
-        let x = self.cursor.0 - bottom.x;
-        let y = self.cursor.1 - bottom.y;
-        let inside = x >= 0.0 && y >= 0.0 && x < bottom.width && y < bottom.height;
-        self.keyboard.touch((self.mouse_down && inside).then(|| {
-            ((x / bottom.width * 320.0) as u16, (y / bottom.height * 240.0) as u16)
-        }));
+        let (touch, top_touch) = (at(bottom, 320.0, 240.0), at(top, 400.0, 240.0));
+        self.keyboard.touch(touch);
+        self.keyboard.top_touch(top_touch);
     }
 
     /// tilts the console while the right button is held, toward where the
@@ -980,6 +1176,7 @@ impl App {
         self.apply_camera();
         self.keyboard.set_keys(self.settings.keys.clone());
         self.gamepads.set_buttons(self.settings.pad.clone());
+        self.gamepads.set_pointer(self.settings.pointer_stick);
         self.apply_volume();
         self.apply_layout();
     }
@@ -1282,6 +1479,7 @@ impl App {
         self.library.poll();
         self.poll_jobs();
         self.poll_gamepads();
+        self.stick_pointer();
         // a room that went away takes the game's local wireless with it
         if self.room.as_ref().is_some_and(|room| !room.open()) {
             self.leave_room();

@@ -27,7 +27,7 @@ log = "0.4"
 thiserror = "2"
 bitflags = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
-recomp-abi = { git = "https://github.com/fearkov/3dsrecomp" }
+recomp-abi = { git = "https://github.com/ShiromiyaG/3dsrecomp", branch = "cli-mods" }
 rayon = "1"
 memmap2 = "0.9"
 bytemuck = { version = "1", features = ["derive"] }

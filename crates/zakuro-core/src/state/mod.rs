@@ -207,6 +207,7 @@ impl System {
                 library.place(&module.name, module.base, &mut self.memory);
             }
         }
+        crate::decomp::after_state(self)?;
         self.gpu.load_state(&saved.gpu)?;
         let console = saved.console;
         self.exited = console.exited;

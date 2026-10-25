@@ -13,6 +13,8 @@ pub struct Gamepads {
     /// none when the system could not be asked for controllers.
     gilrs: Option<Gilrs>,
     buttons: PadButtons,
+    /// the right stick moves the pointer instead of being the C-stick.
+    pointer: bool,
 }
 
 impl Gamepads {
@@ -20,11 +22,33 @@ impl Gamepads {
         let gilrs = Gilrs::new()
             .inspect_err(|error| log::warn!("controllers are not available, {error}"))
             .ok();
-        Gamepads { gilrs, buttons }
+        Gamepads { gilrs, buttons, pointer: false }
     }
 
     pub fn set_buttons(&mut self, buttons: PadButtons) {
         self.buttons = buttons;
+    }
+
+    pub fn set_pointer(&mut self, pointer: bool) {
+        self.pointer = pointer;
+    }
+
+    /// how far the right stick leans, right and down positive, when it
+    /// moves the pointer.
+    pub fn pointer_motion(&self) -> (f32, f32) {
+        let Some(gilrs) = self.gilrs.as_ref().filter(|_| self.pointer) else { return (0.0, 0.0) };
+        for (_, pad) in gilrs.gamepads() {
+            let (x, y) = (pad.value(Axis::RightStickX), pad.value(Axis::RightStickY));
+            if !self.pointer && x.hypot(y) > DEADZONE {
+                return (x.clamp(-1.0, 1.0), -y.clamp(-1.0, 1.0));
+            }
+        }
+        (0.0, 0.0)
+    }
+
+    /// whether the right stick is clicked to touch where the pointer is.
+    pub fn pointer_touching(&self) -> bool {
+        self.pointer && self.holding(Button::RightThumb)
     }
 
     /// takes in what the controllers did since the last call, and returns the

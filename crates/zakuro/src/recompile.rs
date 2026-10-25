@@ -105,7 +105,7 @@ impl Job {
                 }
             };
             let result =
-                compiler.and_then(|compiler| recompile(&rom, update.as_deref(), program_id, &game, data_dir.as_deref(), compiler, None, None, &stop, &events));
+                compiler.and_then(|compiler| recompile(&rom, update.as_deref(), program_id, &game, data_dir.as_deref(), compiler, None, None, None, &stop, &events));
             if let Ok(mut state) = progress.lock() {
                 state.stage = match result {
                     Ok(_) => Stage::Done,
@@ -150,7 +150,9 @@ pub fn run(
     compiler: Compiler,
     hot: Option<&Path>,
     overrides: Option<&Path>,
+    decomp: Option<&Path>,
 ) -> Result<PathBuf, String> {
+    let decomp = decomp.map(recomp3ds::decomp::Decomp::read).transpose()?;
     let events = |event: Event| match event {
         Event::Generated { files, bytes, overrides } => println!("wrote {files} C files, {} MiB, {overrides} overrides", bytes >> 20),
         Event::Note(note) => println!("{note}"),
@@ -159,7 +161,7 @@ pub fn run(
         Event::Built { library, took } => println!("linked {} in {took:.0?}", library.display()),
         Event::Installed(path) => println!("installed {}", path.display()),
     };
-    recompile(rom, update, program_id, name, data_dir, compiler, hot, overrides, &AtomicBool::new(false), &events)
+    recompile(rom, update, program_id, name, data_dir, compiler, hot, overrides, decomp.as_ref(), &AtomicBool::new(false), &events)
 }
 
 /// recompiles the game at rom, its code and its modules the way its update
@@ -174,6 +176,7 @@ fn recompile(
     compiler: Compiler,
     hot: Option<&Path>,
     overrides: Option<&Path>,
+    decomp: Option<&recomp3ds::decomp::Decomp>,
     cancel: &AtomicBool,
     events: &(dyn Fn(Event) + Sync),
 ) -> Result<PathBuf, String> {
@@ -188,7 +191,9 @@ fn recompile(
             "recompiling {name} with its update or mods, which change {}. the library replaces one made without them, and should they go, the functions they changed run in the interpreter",
             changes.describe()
         );
-        options.mods = recomp3ds::Mods { code: changes.code.as_deref(), exheader: changes.exheader.as_deref(), romfs: Some(&files) };
+        options.mods = recomp3ds::Mods { code: changes.code.as_deref(), exheader: changes.exheader.as_deref(), romfs: Some(&files), decomp };
+    } else {
+        options.mods.decomp = decomp;
     }
     build::build(rom, &options, events)
 }

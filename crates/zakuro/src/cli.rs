@@ -45,6 +45,38 @@ pub struct Options {
     pub recompile: bool,
     /// the game's update, in place of one found beside it.
     pub update: Option<String>,
+    /// with --headless, a saved state to go on from, at its frame.
+    pub load_state: Option<String>,
+    /// with --headless, save the state after this many frames, to a file.
+    pub save_state: Option<(u64, String)>,
+    /// with --headless, write a hash of each writable page every this many
+    /// frames, to a file, for comparing two runs.
+    pub memory_hashes: Option<(u64, String)>,
+    /// with --headless, write the writable pages after this many frames.
+    pub dump_memory: Option<(u64, String)>,
+    /// a folder with code written apart from the game (3dsrecomp's
+    /// --decomp), run in place of the functions it replaces.
+    pub decomp: Option<String>,
+    /// run the title's code and the decomp's at each replaced function and
+    /// compare them, in the interpreter.
+    pub decomp_check: bool,
+    /// with decomp_check, keep calls as samples in this file.
+    pub decomp_capture: Option<String>,
+    /// run the title's code and the decomp's again on the samples in this
+    /// file, with no title running, and stop.
+    pub decomp_replay: Option<String>,
+    /// with decomp_replay, runs on changed samples for each function.
+    pub decomp_fuzz: u32,
+    /// run the title's code and the decomp's on every input a spec file
+    /// gives, with the title's code.bin (decomp_code), and stop.
+    pub decomp_exhaustive: Option<String>,
+    pub decomp_code: Option<String>,
+    /// with --load-state and --decomp-check, run every replaced function
+    /// this many times on made-up inputs, the title's code and ours, with
+    /// nothing of the title running, and stop.
+    pub decomp_synth: Option<u32>,
+    /// the title's romfs as files, for the modules decomp_synth loads.
+    pub decomp_romfs: Option<String>,
 }
 
 const USAGE: &str = "\
@@ -80,6 +112,36 @@ options:
                                    then quit
   --update <cia>                   the game's update, decrypted, in place of
                                    one found beside it
+  --load-state <file>              with --headless, go on from a saved state
+                                   (a recording goes on from its frame)
+  --save-state <frames>:<file>     with --headless, save the state after
+                                   that many frames
+  --memory-hashes <every>:<file>   with --headless, write a hash of each
+                                   writable page every that many frames
+  --dump-memory <frames>:<file>    with --headless, write each writable page,
+                                   its address and its 4 KiB, after that many
+                                   frames
+  --decomp <dir>                   code written apart from the game, decomp.bin
+                                   and decomp.txt, that replaces functions of
+                                   it (with --recompile too)
+  --decomp-check                   with --decomp, run both at each replaced
+                                   function and compare (interpreter only)
+  --decomp-capture <file>          --decomp-check, and keep calls as samples
+                                   in file, to run again with
+  --decomp-replay <file>           with --decomp, run both again on the
+                                   samples in file, no game needed, and
+                                   tell how they fared and what they cover
+  --decomp-synth <count>           with --load-state and --decomp-check, run
+                                   each replaced function so many times on
+                                   made-up inputs, the title's code and ours,
+                                   and stop (no title running); modules not
+                                   loaded come from --decomp-romfs <dir>
+  --decomp-fuzz <count>            with --decomp-replay, as many runs for each
+                                   function on samples with an argument or a
+                                   word of their data changed
+  --decomp-exhaustive <spec>       with --decomp and --decomp-code <code.bin>,
+                                   run both on every input the spec gives
+                                   (lines `0xADDRESS r0=0-13 r1=0,1`)
   --data <dir>                     where saves live (default: the system's
                                    place for data, ~/.local/share/zakuro or
                                    %APPDATA%\\zakuro)
@@ -120,6 +182,19 @@ pub fn parse() -> Result<Options, String> {
         mute: false,
         recompile: false,
         update: None,
+        load_state: None,
+        save_state: None,
+        memory_hashes: None,
+        dump_memory: None,
+        decomp: None,
+        decomp_check: false,
+        decomp_capture: None,
+        decomp_replay: None,
+        decomp_fuzz: 0,
+        decomp_exhaustive: None,
+        decomp_code: None,
+        decomp_synth: None,
+        decomp_romfs: None,
         settings: None,
         heat: None,
         hot: None,
@@ -192,6 +267,60 @@ pub fn parse() -> Result<Options, String> {
             "--recompile" => options.recompile = true,
             "--update" => {
                 options.update = Some(args.next().ok_or("--update needs a path")?);
+            }
+            "--load-state" => {
+                options.load_state = Some(args.next().ok_or("--load-state needs a path")?);
+            }
+            "--save-state" => {
+                let value = args.next().ok_or("--save-state needs frames:file")?;
+                let (frames, file) = value.split_once(':').ok_or("--save-state is frames:file")?;
+                let frames = frames.parse().map_err(|_| format!("'{frames}' is not a frame count"))?;
+                options.save_state = Some((frames, file.to_owned()));
+            }
+            "--memory-hashes" => {
+                let value = args.next().ok_or("--memory-hashes needs every:file")?;
+                let (every, file) = value.split_once(':').ok_or("--memory-hashes is every:file")?;
+                let every = every.parse().ok().filter(|&every| every > 0).ok_or_else(|| format!("'{every}' is not a frame count"))?;
+                options.memory_hashes = Some((every, file.to_owned()));
+            }
+            "--dump-memory" => {
+                let value = args.next().ok_or("--dump-memory needs frames:file")?;
+                let (frames, file) = value.split_once(':').ok_or("--dump-memory is frames:file")?;
+                let frames = frames.parse().map_err(|_| format!("'{frames}' is not a frame count"))?;
+                options.dump_memory = Some((frames, file.to_owned()));
+            }
+            "--decomp" => {
+                options.decomp = Some(args.next().ok_or("--decomp needs a folder")?);
+            }
+            "--decomp-check" => {
+                // the check steps both runs one instruction at a time
+                options.decomp_check = true;
+                options.interpreter = true;
+            }
+            "--decomp-capture" => {
+                options.decomp_capture = Some(args.next().ok_or("--decomp-capture needs a file")?.to_owned());
+                options.decomp_check = true;
+                options.interpreter = true;
+            }
+            "--decomp-exhaustive" => {
+                options.decomp_exhaustive = Some(args.next().ok_or("--decomp-exhaustive needs a spec file")?.to_owned());
+            }
+            "--decomp-code" => {
+                options.decomp_code = Some(args.next().ok_or("--decomp-code needs the title's code.bin")?.to_owned());
+            }
+            "--decomp-fuzz" => {
+                let count = args.next().ok_or("--decomp-fuzz needs a count")?;
+                options.decomp_fuzz = count.parse().map_err(|_| format!("--decomp-fuzz: '{count}' is not a count"))?;
+            }
+            "--decomp-synth" => {
+                let count = args.next().ok_or("--decomp-synth needs a count")?;
+                options.decomp_synth = Some(count.parse().map_err(|_| format!("--decomp-synth: '{count}' is not a count"))?);
+            }
+            "--decomp-romfs" => {
+                options.decomp_romfs = Some(args.next().ok_or("--decomp-romfs needs a folder")?.to_owned());
+            }
+            "--decomp-replay" => {
+                options.decomp_replay = Some(args.next().ok_or("--decomp-replay needs a file")?.to_owned());
             }
             "--profile" => options.profile = true,
             "--test-pattern" => options.test_pattern = true,

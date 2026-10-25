@@ -72,6 +72,11 @@ pub struct InputState {
     pub c_stick_y: f32,
     /// touch position in screen pixels, when touched.
     pub touch: Option<(u16, u16)>,
+    /// a touch of the top screen, in its pixels, for a title whose
+    /// recompiled code says what point of the bottom screen it stands for
+    /// (Library::top_touch). touch comes first.
+    #[serde(default)]
+    pub top_touch: Option<(u16, u16)>,
     /// how the console is tilted away from upright, in radians, toward the
     /// right of the screen and toward its bottom, the way dragging the mouse
     /// tilts it. the sensors report it, and how fast it changes.
@@ -299,7 +304,11 @@ pub fn update(system: &mut System, input: InputState) {
     // the touch section's entries start earlier than the pad's, its header
     // has no circle-pad fields to make room for.
     let touch_entry = base + TOUCH_BASE + 0x20 + touch_next * 8;
-    match input.touch {
+    let touch = input.touch.or_else(|| {
+        let (x, y) = input.top_touch?;
+        system.recompiled.as_ref()?.top_touch(x, y)
+    });
+    match touch {
         Some((x, y)) => {
             put16(system, touch_entry, x);
             put16(system, touch_entry + 2, y);

@@ -12,6 +12,9 @@ pub mod idle;
 pub mod kernel;
 pub mod loader;
 pub mod memory;
+pub mod decomp;
+pub mod decomp_check;
+pub mod decomp_synth;
 pub mod mods;
 pub mod replay;
 pub mod room;
@@ -61,6 +64,14 @@ pub struct Config {
     pub texture_packs: bool,
     /// the title's update, an update's CIA, whose code and data it runs.
     pub update: Option<std::path::PathBuf>,
+    /// a folder with code written apart from the title, decomp.bin and
+    /// decomp.txt, that replaces some of its functions.
+    pub decomp: Option<std::path::PathBuf>,
+    /// check the decomp against the functions it replaces instead of
+    /// jumping to it, see decomp_check. interpreter only.
+    pub decomp_check: bool,
+    /// with decomp_check, keep calls as samples, see decomp_check::Capture.
+    pub decomp_capture: bool,
     /// the title's downloadable content, DLC CIAs.
     pub dlc: Vec<std::path::PathBuf>,
     /// the enhancements turned on, by name, for each title by its id.
@@ -109,6 +120,9 @@ impl Default for Config {
             hardware_renderer: false,
             texture_packs: true,
             update: None,
+            decomp: None,
+            decomp_check: false,
+            decomp_capture: false,
             dlc: Vec::new(),
             enhancements: std::collections::BTreeMap::new(),
             resolution: 1,
@@ -209,6 +223,9 @@ pub struct System {
 
     /// sampling profiler, counts how often each thread was found at each PC.
     pub profile: Option<BTreeMap<(ThreadId, u32), u64>>,
+    /// the profile's samples in modules unloaded since, by thread, module
+    /// and offset: another module may load where one was.
+    pub profile_unloaded: BTreeMap<(ThreadId, String, u32), u64>,
     /// steps since the profiler last looked.
     profile_skip: u32,
 
@@ -220,6 +237,11 @@ pub struct System {
     pub recompiled: Option<recompiled::Library>,
     /// where the title ran in the interpreter despite the library.
     pub hints: Option<hints::Hints>,
+    /// with Config::decomp_check, the replaced functions and how each fared.
+    pub decomp_check: Option<Box<decomp_check::Check>>,
+    /// the decomp's functions of modules, hooked as each loads.
+    pub decomp_module_hooks: Vec<decomp::ModuleHook>,
+    pub decomp_module_imports: Vec<(String, u32, u32, Option<usize>)>,
     /// where the title spends its time, by the place of the code, for
     /// 3dsrecomp build --hot.
     pub heat: Option<heat::Heat>,
@@ -297,10 +319,14 @@ impl System {
             next_audio_frame: CYCLES_PER_AUDIO_FRAME,
             next_preempt: PREEMPT_INTERVAL,
             profile: None,
+            profile_unloaded: BTreeMap::new(),
             profile_skip: 0,
             idle,
             recompiled: None,
             hints: None,
+            decomp_check: None,
+            decomp_module_hooks: Vec::new(),
+            decomp_module_imports: Vec::new(),
             heat: None,
             interpreted_instructions: 0,
             recompiled_instructions: 0,
@@ -463,6 +489,18 @@ impl System {
         self.history[self.history_index] = pc | self.cpu.cpsr.thumb as u32;
         self.history_index = (self.history_index + 1) % HISTORY_LENGTH;
 
+        if let Some(new) = self.decomp_check.as_ref().and_then(|check| check.hooked(pc, self.cpu.cpsr.thumb)) {
+            match decomp_check::call(self, new) {
+                decomp_check::Call::Done => return StepOutcome::Ran,
+                decomp_check::Call::Syscall(number) => {
+                    self.idle_interrupted(true);
+                    kernel::svc::dispatch(self, number);
+                    return if self.exited { StepOutcome::Exited } else { StepOutcome::Ran };
+                }
+                decomp_check::Call::Title => {}
+            }
+        }
+
         if self.profile.is_some() || self.heat.is_some() {
             self.sample();
         }
@@ -552,6 +590,7 @@ impl System {
     /// has to look at, when the library has code there. what it returns
     /// stands in for what one interpreted step would.
     fn run_recompiled(&mut self, deadline: Option<u64>) -> Option<Option<Exit>> {
+        let system = self as *mut System;
         let library = self.recompiled.as_ref()?;
         if !library.has_code(self.cpu.regs[15] | self.cpu.cpsr.thumb as u32) {
             return None;
@@ -583,7 +622,17 @@ impl System {
         let linear_base = self.kernel.linear_base;
         // SAFETY: as in step, until the run is over
         unsafe { self.memory.set_gpu_sync(memory::GpuSync { gpu, linear_base, sync: sync_for_cpu, sync_write: sync_for_cpu_write }) };
-        let (ran, stop) = library.run(&mut self.cpu, &mut self.memory, budget);
+        // a system call in a call from C into the guest, on the cpu the run
+        // works on. SAFETY: run hands the cpu and memory over while it calls
+        // this, and nothing else touches the system meanwhile
+        let mut svc = |number: u32| unsafe {
+            let system = &mut *system;
+            let thread = system.kernel.current_thread;
+            kernel::svc::dispatch(system, number);
+            system.kernel.current_thread == thread
+                && system.kernel.current().is_some_and(|thread| thread.status == kernel::thread::ThreadStatus::Running)
+        };
+        let (ran, stop) = library.run(&mut self.cpu, &mut self.memory, budget, &mut svc);
         self.memory.clear_gpu_sync();
         self.recompiled_instructions += ran;
         if event.is_some_and(|tick| self.cpu.cycles >= tick) {
@@ -630,6 +679,35 @@ impl System {
         entries.sort_by_key(|&(_, _, hits)| std::cmp::Reverse(hits));
         entries.truncate(count);
         entries
+    }
+
+    /// moves the profile's samples in a module about to be unloaded aside,
+    /// by module and offset.
+    pub fn profile_unload(&mut self, name: &str, base: u32, size: u32) {
+        let Some(profile) = &mut self.profile else {
+            return;
+        };
+        let inside: Vec<(ThreadId, u32)> = profile.range((0, 0)..).filter(|((_, pc), _)| (base..base + size).contains(pc)).map(|(&key, _)| key).collect();
+        for (thread, pc) in inside {
+            let hits = profile.remove(&(thread, pc)).unwrap_or(0);
+            *self.profile_unloaded.entry((thread, name.trim_end_matches(".cro").to_owned(), pc - base)).or_insert(0) += hits;
+        }
+    }
+
+    /// the hottest places in modules, loaded now or before: thread, module,
+    /// offset, samples.
+    pub fn hot_module_spots(&self) -> Vec<(String, String, u32, u64)> {
+        let mut all: BTreeMap<(ThreadId, String, u32), u64> = self.profile_unloaded.clone();
+        if let Some(profile) = &self.profile {
+            for (&(thread, pc), &hits) in profile {
+                if let Some(m) = self.cro.modules.iter().find(|m| (m.base..m.base + m.size).contains(&pc)) {
+                    *all.entry((thread, m.name.trim_end_matches(".cro").to_owned(), pc - m.base)).or_insert(0) += hits;
+                }
+            }
+        }
+        let mut spots: Vec<(String, String, u32, u64)> = all.into_iter().map(|((thread, module, offset), hits)| (self.thread_name(thread), module, offset, hits)).collect();
+        spots.sort_by_key(|spot| std::cmp::Reverse(spot.3));
+        spots
     }
 
     /// how many samples found each thread running, most first.

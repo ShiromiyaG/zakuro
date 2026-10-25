@@ -463,6 +463,21 @@ impl Memory {
 
     // -- bulk access --------------------------------------------------------
 
+    /// each writable page and a hash of what it holds, for comparing two
+    /// runs page by page.
+    pub fn page_hashes(&self) -> Vec<(VAddr, u64)> {
+        (0..PAGE_TABLE_ENTRIES)
+            .filter(|&page| !self.write_table[page].is_null())
+            .map(|page| {
+                let vaddr = (page as u32) << PAGE_BITS;
+                let bytes = self.page_read(vaddr).unwrap_or(&[]);
+                // fnv-1a
+                let hash = bytes.iter().fold(0xCBF2_9CE4_8422_2325u64, |hash, &byte| (hash ^ byte as u64).wrapping_mul(0x100_0000_01B3));
+                (vaddr, hash)
+            })
+            .collect()
+    }
+
     /// copies a block of guest memory out, page by page so it can straddle
     /// mappings. Bytes from unmapped pages read as zero.
     pub fn read_bytes(&mut self, vaddr: VAddr, out: &mut [u8]) {

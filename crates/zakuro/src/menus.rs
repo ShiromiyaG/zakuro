@@ -830,6 +830,8 @@ impl Menus {
                     }
                 });
                 ui.label(RichText::new("The circle pad is the left stick, and Home opens the menu over the game.").weak());
+                ui.checkbox(&mut settings.pointer_stick, "Right stick moves the pointer")
+                    .on_hover_text("The right stick moves the mouse pointer instead of being the C-stick, and clicking it touches where the pointer is, for games played on one screen.");
                 if ui.button("Default controller").clicked() {
                     settings.pad = PadButtons::default();
                     self.rebinding_pad = None;

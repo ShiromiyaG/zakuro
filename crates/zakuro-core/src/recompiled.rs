@@ -29,7 +29,15 @@ pub struct Library {
     /// picks. a jump through a register looks its target up, which is a
     /// search through every function otherwise.
     found: Box<[Found]>,
+    /// what the code says a touch of the top screen stands for, see
+    /// Library::top_touch.
+    top_touch: Option<TopTouch>,
 }
+
+/// recomp_top_touch(x, y, &bottom_x, &bottom_y), a function the overrides
+/// of a title shown on one screen may export: the point of the bottom
+/// screen that a point of the top one stands for, nonzero when there is one.
+type TopTouch = unsafe extern "C" fn(i32, i32, *mut i32, *mut i32) -> i32;
 
 /// a slot of Library::found, an address and the code found for it.
 type Found = Cell<(u32, Option<Code>)>;
@@ -63,6 +71,9 @@ struct Machine<'a> {
     library: &'a Library,
     /// what the interpreter stopped with inside a callback.
     pending: Option<Exit>,
+    /// carries out a system call for run, on the cpu as it is; false when
+    /// the thread has to wait.
+    svc: &'a mut dyn FnMut(u32) -> bool,
 }
 
 /// # Safety
@@ -119,7 +130,78 @@ unsafe extern "C" fn lookup(ctx: *mut Context, address: u32) -> Option<Code> {
     unsafe { machine(ctx).library.lookup(address) }
 }
 
-static HOST: Host = Host { read8, read16, read32, write8, write16, write32, interpret, lookup };
+/// how many instructions a run for C may take before it gives up, a guest
+/// that never gets back to stop.
+const RUN_LIMIT: i64 = 1 << 30;
+
+/// runs the guest on to stop for C calling into it (an override, or code
+/// written by hand): the code where there is any, the interpreter elsewhere,
+/// system calls as the scheduler's step would. a thread cannot wait in the
+/// middle of C, so a system call that has it wait ends the run with the
+/// thread waiting; the C returns, and the guest goes on from where it was
+/// once the thread wakes, towards a return address no code is at.
+unsafe extern "C" fn run(ctx: *mut Context, stop: u32) {
+    unsafe {
+        let machine = machine(ctx);
+        let budget = (*ctx).budget;
+        let mut used: i64 = 0;
+        loop {
+            if let Some(exit) = machine.pending.take() {
+                match exit {
+                    Exit::Supervisor(number) => {
+                        (*ctx).svc = number;
+                        (*ctx).exit = EXIT_SVC;
+                    }
+                    other => {
+                        log::error!("a call from C into the guest stopped on {other:?} at 0x{:08X}", (*ctx).r[15]);
+                        machine.pending = Some(other);
+                        (*ctx).exit = EXIT_UNWIND;
+                        break;
+                    }
+                }
+            }
+            if (*ctx).exit == EXIT_SVC {
+                let number = (*ctx).svc;
+                load(&*ctx, machine.cpu);
+                let went_on = (machine.svc)(number);
+                store(machine.cpu, &mut *ctx);
+                if !went_on {
+                    log::error!("a call from C into the guest made system call 0x{number:02X}, which waits; the call is lost");
+                    // the scheduler has to look before anything runs on
+                    (*ctx).exit = EXIT_BUDGET;
+                    break;
+                }
+            }
+            (*ctx).exit = 0;
+            if (*ctx).r[15] == stop && (*ctx).thumb == 0 {
+                break;
+            }
+            if used > RUN_LIMIT {
+                log::error!("a call from C into the guest did not return, at 0x{:08X}", (*ctx).r[15]);
+                (*ctx).exit = EXIT_UNWIND;
+                break;
+            }
+            if let Some(code) = machine.library.lookup((*ctx).r[15] | (*ctx).thumb as u32) {
+                (*ctx).budget = i32::MAX / 2;
+                code(ctx);
+                used += (i32::MAX / 2 - (*ctx).budget) as i64;
+                if (*ctx).exit == EXIT_BUDGET {
+                    (*ctx).exit = 0;
+                }
+                continue;
+            }
+            machine.library.fallbacks.set(machine.library.fallbacks.get() + 1);
+            load(&*ctx, machine.cpu);
+            let exit = machine.cpu.step(machine.memory);
+            store(machine.cpu, &mut *ctx);
+            used += 1;
+            machine.pending = exit;
+        }
+        (*ctx).budget = (budget as i64 - used).max(i32::MIN as i64) as i32;
+    }
+}
+
+static HOST: Host = Host { read8, read16, read32, write8, write16, write32, interpret, lookup, run };
 
 fn load(ctx: &Context, cpu: &mut Cpu) {
     cpu.regs = ctx.r;
@@ -159,7 +241,26 @@ impl Library {
     }
 
     fn new(code: recomp_abi::Library) -> Library {
-        Library { code, fallbacks: Cell::new(0), found: Library::nothing_found() }
+        // SAFETY: an override exporting the name gives it this type
+        let top_touch = code.symbol(b"recomp_top_touch").map(|address| unsafe { std::mem::transmute::<*const c_void, TopTouch>(address) });
+        Library { code, fallbacks: Cell::new(0), found: Library::nothing_found(), top_touch }
+    }
+
+    /// the point of the bottom screen a touch of the top one at x, y stands
+    /// for, when the title's overrides draw the bottom screen's things on
+    /// the top one and say so.
+    pub fn top_touch(&self, x: u16, y: u16) -> Option<(u16, u16)> {
+        let top_touch = self.top_touch?;
+        let (mut bottom_x, mut bottom_y) = (0, 0);
+        // SAFETY: the function only reads its arguments and writes the two
+        let found = unsafe { top_touch(x.into(), y.into(), &mut bottom_x, &mut bottom_y) };
+        (found != 0).then(|| (bottom_x.clamp(0, 319) as u16, bottom_y.clamp(0, 239) as u16))
+    }
+
+    /// whether the title's overrides can tell what a touch of the top
+    /// screen stands for.
+    pub fn takes_top_touch(&self) -> bool {
+        self.top_touch.is_some()
     }
 
     /// every slot of found empty, an address no code starts at in each.
@@ -235,8 +336,10 @@ impl Library {
     }
 
     /// runs recompiled code from the cpu's pc for about budget instructions,
-    /// returning how many ran and why it stopped.
-    pub fn run(&self, cpu: &mut Cpu, memory: &mut Memory, budget: u64) -> (u64, Stop) {
+    /// returning how many ran and why it stopped. svc carries out a system
+    /// call made in a call from C into the guest, on the cpu as it is, and
+    /// says whether the thread can go on.
+    pub fn run(&self, cpu: &mut Cpu, memory: &mut Memory, budget: u64, svc: &mut dyn FnMut(u32) -> bool) -> (u64, Stop) {
         let cycles = cpu.cycles;
         let (read_pages, write_pages) = memory.page_tables();
         let mut ctx = Context {
@@ -263,7 +366,7 @@ impl Library {
             user: std::ptr::null_mut(),
         };
         store(cpu, &mut ctx);
-        let mut machine = Machine { cpu, memory, library: self, pending: None };
+        let mut machine = Machine { cpu, memory, library: self, pending: None, svc };
         // the code works on the VFP registers where they are, so the
         // interpreter sees its changes without copying them around
         ctx.vfp = machine.cpu.vfp.regs.as_mut_ptr();

@@ -1,7 +1,8 @@
 //! a run's inputs written down frame by frame, with the clock it started
 //! at, so the run can be played back exactly. a line per change of input,
 //! the frame it starts at, the buttons, the circle pad, the touch, the tilt
-//! and the C-stick, which recordings from before them leave out.
+//! and the C-stick, which recordings from before them leave out, and a
+//! touch of the top screen, only when there is one.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -38,6 +39,10 @@ impl Recorder {
                 input.c_stick_x,
                 input.c_stick_y
             );
+            let line = match input.top_touch {
+                Some((x, y)) => format!("{line} {x} {y}"),
+                None => line,
+            };
             // written through at once, the run may end in a crash
             if writeln!(self.out, "{line}").and_then(|()| self.out.flush()).is_err() {
                 log::warn!("could not write to the input recording");
@@ -70,10 +75,11 @@ impl Replay {
             let parse = || -> Option<(u64, InputState)> {
                 let (tx, ty): (i32, i32) = (tx.parse().ok()?, ty.parse().ok()?);
                 let pair = |x: &str, y: &str| -> Option<[f32; 2]> { Some([x.parse().ok()?, y.parse().ok()?]) };
-                let (tilt, c_stick) = match rest {
-                    [] => ([0.0; 2], [0.0; 2]),
-                    [x, y] => (pair(x, y)?, [0.0; 2]),
-                    [x, y, cx, cy] => (pair(x, y)?, pair(cx, cy)?),
+                let (tilt, c_stick, top) = match rest {
+                    [] => ([0.0; 2], [0.0; 2], None),
+                    [x, y] => (pair(x, y)?, [0.0; 2], None),
+                    [x, y, cx, cy] => (pair(x, y)?, pair(cx, cy)?, None),
+                    [x, y, cx, cy, tx, ty] => (pair(x, y)?, pair(cx, cy)?, Some((tx.parse().ok()?, ty.parse().ok()?))),
                     _ => return None,
                 };
                 Some((
@@ -83,6 +89,7 @@ impl Replay {
                         circle_x: x.parse().ok()?,
                         circle_y: y.parse().ok()?,
                         touch: (tx >= 0).then_some((tx as u16, ty as u16)),
+                        top_touch: top,
                         tilt,
                         c_stick_x: c_stick[0],
                         c_stick_y: c_stick[1],
@@ -125,6 +132,7 @@ mod tests {
             circle_x: 0.5,
             circle_y: -1.0,
             touch: Some((10, 20)),
+            top_touch: Some((300, 40)),
             tilt: [0.25, -0.5],
             c_stick_x: -0.75,
             c_stick_y: 1.0,

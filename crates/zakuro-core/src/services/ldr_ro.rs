@@ -80,6 +80,12 @@ pub fn handle(system: &mut System, buffer: &CommandBuffer, header: Header) -> bo
             match result {
                 Ok(fix_size) => {
                     copy_back(system, base, size);
+                    // before the recompiled code checks the module's bytes, so a
+                    // function hooked there runs in the interpreter and jumps
+                    if let Some(name) = system.cro.modules.last().map(|module| module.name.clone()) {
+                        log::info!("ldr:ro: {name} loaded at 0x{base:08X}");
+                        crate::decomp::hook_module(system, &name, base);
+                    }
                     shrink(system, base, if fix_size == 0 { size } else { fix_size });
                     if let (Some(library), Some(module)) = (&mut system.recompiled, system.cro.modules.last()) {
                         library.place(&module.name, module.base, &mut system.memory);
@@ -103,6 +109,10 @@ pub fn handle(system: &mut System, buffer: &CommandBuffer, header: Header) -> bo
             let module = system.cro.modules.iter().find(|m| m.base == address);
             if let (Some(library), Some(module)) = (&mut system.recompiled, module) {
                 library.place(&module.name, 0, &mut system.memory);
+            }
+            if let Some((name, size)) = system.cro.modules.iter().find(|m| m.base == address).map(|m| (m.name.clone(), m.size)) {
+                crate::decomp::unhook_module(system, address, size);
+                system.profile_unload(&name, address, size);
             }
             system.cro.unload(&mut system.memory, address);
             copy_out(system, address);
