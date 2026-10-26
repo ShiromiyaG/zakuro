@@ -15,6 +15,7 @@ pub mod memory;
 pub mod decomp;
 pub mod decomp_check;
 pub mod decomp_synth;
+pub mod usage;
 pub mod mods;
 pub mod replay;
 pub mod room;

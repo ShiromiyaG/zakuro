@@ -93,6 +93,7 @@ pub fn handle_request(system: &mut System, target: Target) {
     let header = buffer.header(&mut system.memory);
     let command = header.command_id();
     let name = target.name().to_owned();
+    crate::usage::record(|| format!("ipc {name} 0x{command:04X}"));
 
     log::trace!(
         "IPC {name} cmd 0x{command:04X} ({} normal, {} translate)",

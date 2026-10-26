@@ -149,6 +149,7 @@ pub fn run(linked: Option<Linked>) {
                 std::process::exit(decomp_synth(&mut game.system, &romfs, runs));
             }
             run_headless(&mut game.system, game.replay.as_mut(), frames, screenshots, app.options.save_state.clone(), app.options.memory_hashes.clone(), app.options.dump_memory.clone());
+            zakuro_core::usage::dump();
             let capture = game.system.decomp_check.as_ref().and_then(|check| check.capture.as_ref());
             if let (Some(capture), Some(file)) = (capture, &app.options.decomp_capture) {
                 match capture.write(Path::new(file)) {

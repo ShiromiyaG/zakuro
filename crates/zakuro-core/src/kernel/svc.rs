@@ -32,6 +32,7 @@ fn invalid_handle(system: &mut System, handle: u32, what: &str) -> u32 {
 
 /// runs one supervisor call.
 pub fn dispatch(system: &mut System, number: u32) {
+    crate::usage::record(|| format!("svc 0x{number:02X}"));
     if log::log_enabled!(log::Level::Trace) {
         let thread = system
             .kernel
