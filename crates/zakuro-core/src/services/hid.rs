@@ -304,9 +304,13 @@ pub fn update(system: &mut System, input: InputState) {
     // the touch section's entries start earlier than the pad's, its header
     // has no circle-pad fields to make room for.
     let touch_entry = base + TOUCH_BASE + 0x20 + touch_next * 8;
+    // a touch of the top screen: in a panel of the bottom one the decomp
+    // shows there, the point of the bottom screen under it, else what the
+    // overrides say
+    let panels = input.top_touch.map(|_| crate::decomp::panels(system)).unwrap_or_default();
     let touch = input.touch.or_else(|| {
         let (x, y) = input.top_touch?;
-        system.recompiled.as_ref()?.top_touch(x, y)
+        panels.iter().rev().find_map(|panel| panel.touch(x, y)).or_else(|| system.recompiled.as_ref()?.top_touch(x, y))
     });
     match touch {
         Some((x, y)) => {

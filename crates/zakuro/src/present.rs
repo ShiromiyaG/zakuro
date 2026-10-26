@@ -102,6 +102,14 @@ impl Backend {
         }
     }
 
+    pub fn set_panels(&mut self, panels: Vec<zakuro_gpu::Panel>) {
+        match self {
+            Backend::OpenGl { presenter, .. } => presenter.set_panels(panels),
+            Backend::Vulkan(presenter) => presenter.set_panels(panels),
+            Backend::None => {}
+        }
+    }
+
     pub fn set_stereo(&mut self, stereo: zakuro_gpu::Stereo) {
         match self {
             Backend::OpenGl { presenter, .. } => presenter.set_stereo(stereo),

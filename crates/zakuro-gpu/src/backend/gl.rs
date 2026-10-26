@@ -4,14 +4,17 @@ use std::collections::HashMap;
 
 use glow::HasContext;
 
-use super::{place, Overlay, OverlayVertex, PresentError, Presenter, ScreenFilter, ScreenImage, ScreenLayout, Shown, Stereo, StereoMode, Viewport};
+use super::{panel_places, place, Overlay, Panel, OverlayVertex, PresentError, Presenter, ScreenFilter, ScreenImage, ScreenLayout, Shown, Stereo, StereoMode, Viewport};
 
 const VERTEX_SHADER: &str = r#"#version 330 core
 // a single oversized triangle covers the viewport with no vertex buffer.
 out vec2 uv;
+// the part of the picture drawn, corner and size from the top left: all of
+// it, or a panel's piece of the bottom screen.
+uniform vec4 area;
 void main() {
     vec2 position = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
-    uv = vec2(position.x, 1.0 - position.y);
+    uv = area.xy + vec2(position.x, 1.0 - position.y) * area.zw;
     gl_Position = vec4(position * 2.0 - 1.0, 0.0, 1.0);
 }
 "#;
@@ -141,6 +144,7 @@ pub struct GlPresenter {
     filter: ScreenFilter,
     integer: bool,
     stereo: Stereo,
+    panels: Vec<Panel>,
 }
 
 impl GlPresenter {
@@ -211,6 +215,7 @@ impl GlPresenter {
             filter: ScreenFilter::default(),
             integer: false,
             stereo: Stereo::default(),
+            panels: Vec::new(),
         })
     }
 
@@ -268,10 +273,18 @@ impl GlPresenter {
     }
 
     fn draw_screen(&self, index: usize, viewport: Viewport) {
+        self.draw_area(index, viewport, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    /// part of a screen's picture, area as in the vertex shader.
+    fn draw_area(&self, index: usize, viewport: Viewport, area: [f32; 4]) {
         let gl = &self.gl;
         self.use_program(self.program);
         self.set_viewport(viewport);
         unsafe {
+            if let Some(location) = gl.get_uniform_location(self.program, "area") {
+                gl.uniform_4_f32(Some(&location), area[0], area[1], area[2], area[3]);
+            }
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.textures[index]));
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
@@ -336,13 +349,19 @@ impl Presenter for GlPresenter {
             gl.bind_vertex_array(Some(self.vertex_array));
         }
 
-        for (viewport, shown) in place(self.window.0, self.window.1, self.arrangement, self.top_width, self.integer, self.stereo, has_right) {
+        let places = place(self.window.0, self.window.1, self.arrangement, self.top_width, self.integer, self.stereo, has_right);
+        for &(viewport, shown) in &places {
             match shown {
                 Shown::Top if !top.is_empty() => self.draw_screen(0, viewport),
                 Shown::Bottom if !bottom.is_empty() => self.draw_screen(1, viewport),
                 Shown::Right => self.draw_screen(2, viewport),
                 Shown::Both if !top.is_empty() => self.draw_both(viewport),
                 _ => {}
+            }
+        }
+        if !bottom.is_empty() {
+            for (viewport, panel) in panel_places(self.arrangement, &places, &self.panels) {
+                self.draw_area(1, viewport, panel.from);
             }
         }
 
@@ -372,6 +391,10 @@ impl Presenter for GlPresenter {
 
     fn set_stereo(&mut self, stereo: Stereo) {
         self.stereo = stereo;
+    }
+
+    fn set_panels(&mut self, panels: Vec<Panel>) {
+        self.panels = panels;
     }
 }
 

@@ -8,7 +8,7 @@ use ash::vk;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use super::vulkan_overlay::OverlayPainter;
-use super::{place, GpuScreen, Overlay, PresentError, Presenter, ScreenFilter, ScreenImage, ScreenLayout, Shown, Stereo, StereoMode, Viewport};
+use super::{panel_places, place, GpuScreen, Panel, Overlay, PresentError, Presenter, ScreenFilter, ScreenImage, ScreenLayout, Shown, Stereo, StereoMode, Viewport};
 use crate::raster::hardware::{can_render, render_device};
 use crate::SharedDevice;
 
@@ -125,6 +125,7 @@ pub struct VulkanPresenter {
     filter: ScreenFilter,
     integer: bool,
     stereo: Stereo,
+    panels: Vec<Panel>,
     /// set when the swapchain no longer matches the window.
     stale: bool,
 }
@@ -410,6 +411,7 @@ impl VulkanPresenter {
             filter: ScreenFilter::default(),
             integer: false,
             stereo: Stereo::default(),
+            panels: Vec::new(),
             stale: false,
         };
 
@@ -777,13 +779,23 @@ impl VulkanPresenter {
                 }
             };
             let places = place(self.extent.width, self.extent.height, self.arrangement, self.top_width, self.integer, self.stereo, right);
-            for (viewport, shown) in places {
+            // the panels over the top screen: the bottom screen's crop
+            // narrowed to each one's piece
+            let panels: Vec<(Viewport, Shown, Option<[f32; 4]>)> = panel_places(self.arrangement, &places, &self.panels)
+                .into_iter()
+                .map(|(viewport, panel)| (viewport, Shown::Bottom, Some(panel.from)))
+                .collect();
+            let places: Vec<(Viewport, Shown, Option<[f32; 4]>)> = places.into_iter().map(|(viewport, shown)| (viewport, shown, None)).chain(panels).collect();
+            for (viewport, shown, piece) in places {
                 let index = match shown {
                     Shown::Top | Shown::Both => 0,
                     Shown::Bottom => 1,
                     Shown::Right => 2,
                 };
-                let Some((descriptor, area)) = crop(index) else { continue };
+                let Some((descriptor, mut area)) = crop(index) else { continue };
+                if let Some([x, y, width, height]) = piece {
+                    area = [area[0] + x * area[2], area[1] + y * area[3], width * area[2], height * area[3], area[4], area[5], area[6], area[7]];
+                }
                 let mut constants: Vec<u8> = area.iter().flat_map(|c| c.to_le_bytes()).collect();
                 constants.extend_from_slice(&self.filter.mode().to_le_bytes());
                 let (pipeline, layout, set) = if shown == Shown::Both {
@@ -967,6 +979,10 @@ impl Presenter for VulkanPresenter {
     fn set_scaling(&mut self, filter: ScreenFilter, integer: bool) {
         self.filter = filter;
         self.integer = integer;
+    }
+
+    fn set_panels(&mut self, panels: Vec<Panel>) {
+        self.panels = panels;
     }
 
     fn set_stereo(&mut self, stereo: Stereo) {

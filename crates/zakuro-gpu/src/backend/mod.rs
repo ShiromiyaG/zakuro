@@ -89,6 +89,32 @@ pub struct Viewport {
     pub height: f32,
 }
 
+/// a piece of the bottom screen drawn over the top one when the top screen
+/// is shown alone: from a rectangle of the bottom screen, to one of the top
+/// screen, both as fractions of the screen (x, y, width, height, from the
+/// top left).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Panel {
+    pub from: [f32; 4],
+    pub to: [f32; 4],
+}
+
+/// where each panel goes in the window, over each place the top screen is
+/// drawn; none unless the top screen is shown alone.
+pub fn panel_places(arrangement: ScreenLayout, places: &[(Viewport, Shown)], panels: &[Panel]) -> Vec<(Viewport, Panel)> {
+    if arrangement != ScreenLayout::TopOnly {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for (top, _) in places.iter().filter(|(_, shown)| matches!(shown, Shown::Top | Shown::Right | Shown::Both)) {
+        for panel in panels {
+            let [x, y, width, height] = panel.to;
+            out.push((Viewport { x: top.x + x * top.width, y: top.y + y * top.height, width: width * top.width, height: height * top.height }, *panel));
+        }
+    }
+    out
+}
+
 /// how the screens are arranged in the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScreenLayout {
@@ -331,6 +357,10 @@ pub trait Presenter {
 
     /// how the 3D shows from the next frame on.
     fn set_stereo(&mut self, stereo: Stereo);
+
+    /// the pieces of the bottom screen drawn over the top one from the next
+    /// frame on, when the top screen is shown alone.
+    fn set_panels(&mut self, panels: Vec<Panel>);
 }
 
 #[cfg(test)]
