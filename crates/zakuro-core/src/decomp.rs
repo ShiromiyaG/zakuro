@@ -22,6 +22,9 @@ pub struct Decomp {
     /// for Thumb), the word of the decomp's the address goes in, and the
     /// segment the offset is from (none: from where the module loads).
     pub module_imports: Vec<(String, u32, u32, Option<usize>)>,
+    /// variables of the decomp's the host reads or writes, by name
+    /// (`symbol` lines): solstice_single_screen, solstice_panels.
+    pub symbols: std::collections::BTreeMap<String, u32>,
 }
 
 /// a function of a module the decomp replaces: the module's name, its
@@ -41,7 +44,7 @@ impl Decomp {
         let read = |name: &str| std::fs::read(dir.join(name)).map_err(|error| format!("could not read {}, {error}", dir.join(name).display()));
         let code = read("decomp.bin")?;
         let text = String::from_utf8_lossy(&read("decomp.txt")?).into_owned();
-        let mut decomp = Decomp { base: 0, code, hooks: Vec::new(), returns: Default::default(), module_hooks: Vec::new(), module_imports: Vec::new() };
+        let mut decomp = Decomp { base: 0, code, hooks: Vec::new(), returns: Default::default(), module_hooks: Vec::new(), module_imports: Vec::new(), symbols: Default::default() };
         for line in text.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
             let words: Vec<&str> = line.split_whitespace().collect();
             let number = |i: usize| {
@@ -68,6 +71,10 @@ impl Decomp {
                     new: number(3)?,
                     kind: words.get(4).map(|kind| kind.to_string()),
                 }),
+                "symbol" => {
+                    let name = words.get(1).ok_or_else(|| format!("decomp.txt: '{line}' is short"))?;
+                    decomp.symbols.insert(name.to_string(), number(2)?);
+                }
                 _ => {}
             }
         }
@@ -128,7 +135,7 @@ pub fn hook_module(system: &mut crate::System, name: &str, base: u32) {
                     check.returns.insert(old, kind.clone());
                 }
             }
-            None => system.memory.write_bytes(old & !1, &Decomp::stub(old, hook.new)),
+            None => system.memory.write_code(old & !1, &Decomp::stub(old, hook.new)),
         }
     }
 }
@@ -160,7 +167,7 @@ pub fn after_state(system: &mut crate::System) -> Result<(), String> {
     system.memory.write_bytes(decomp.base, &decomp.code);
     if system.decomp_check.is_none() {
         for &(old, new) in &decomp.hooks {
-            system.memory.write_bytes(old & !1, &Decomp::stub(old, new));
+            system.memory.write_code(old & !1, &Decomp::stub(old, new));
         }
     }
     let modules: Vec<(String, u32, u32)> = system.cro.modules.iter().map(|m| (m.name.clone(), m.base, m.size)).collect();
@@ -175,4 +182,58 @@ pub fn after_state(system: &mut crate::System) -> Result<(), String> {
 /// from the module's start, or from the start of a segment.
 pub fn module_address(base: u32, segments: &[u32], offset: u32, segment: Option<usize>) -> u32 {
     segment.map_or(base, |n| segments.get(n).copied().unwrap_or(0)).wrapping_add(offset)
+}
+
+/// a piece of the bottom screen shown over the top one, as the decomp asks
+/// (solstice_panels): from x, y, width, height in the bottom screen's
+/// pixels, to the same in the top screen's (400 x 240).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Panel {
+    pub from: [u16; 4],
+    pub to: [i16; 4],
+}
+
+impl Panel {
+    /// the point of the bottom screen a point of the top one in this panel
+    /// stands for.
+    pub fn touch(&self, x: u16, y: u16) -> Option<(u16, u16)> {
+        let [fx, fy, fw, fh] = self.from.map(i32::from);
+        let [tx, ty, tw, th] = self.to.map(i32::from);
+        let (x, y) = (i32::from(x), i32::from(y));
+        if tw <= 0 || th <= 0 || x < tx || y < ty || x >= tx + tw || y >= ty + th {
+            return None;
+        }
+        Some(((fx + (x - tx) * fw / tw) as u16, (fy + (y - ty) * fh / th) as u16))
+    }
+}
+
+/// how many panels solstice_panels holds at most.
+pub const PANELS: usize = 8;
+
+/// the panels the decomp asks for this frame: solstice_panels is a count,
+/// then that many of 8 halfwords.
+pub fn panels(system: &mut crate::System) -> Vec<Panel> {
+    let Some(&at) = system.decomp_symbols.get("solstice_panels") else {
+        return Vec::new();
+    };
+    let mut word = [0u8; 4];
+    system.memory.read_bytes(at, &mut word);
+    let count = (u32::from_le_bytes(word) as usize).min(PANELS);
+    (0..count)
+        .map(|i| {
+            let mut bytes = [0u8; 16];
+            system.memory.read_bytes(at + 4 + 16 * i as u32, &mut bytes);
+            let half = |k: usize| u16::from_le_bytes([bytes[2 * k], bytes[2 * k + 1]]);
+            Panel { from: [half(0), half(1), half(2), half(3)], to: [half(4) as i16, half(5) as i16, half(6) as i16, half(7) as i16] }
+        })
+        .collect()
+}
+
+/// tells the decomp whether the screens are shown as one
+/// (solstice_single_screen), which it reads to lay the bottom screen out
+/// over the top one; 0 while it is checked against the title.
+pub fn set_single_screen(system: &mut crate::System, on: bool) {
+    if let Some(&at) = system.decomp_symbols.get("solstice_single_screen") {
+        system.memory.write_bytes(at, &u32::from(on).to_le_bytes());
+    }
 }

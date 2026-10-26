@@ -361,7 +361,11 @@ pub(crate) fn run<M: Raw>(
     let mut bus = Logged { memory, old: BTreeMap::new(), reads };
     let start = cpu.cycles;
     let mut end = None;
-    while cpu.cycles - start < limit {
+    // steps too: an instruction that counts no cycles (a wait) never ends
+    // a run by cycles alone
+    let mut steps = 0u64;
+    while cpu.cycles - start < limit && steps < limit {
+        steps += 1;
         if cpu.regs[15] & !1 == SENTINEL {
             end = Some(End::Returned);
             break;

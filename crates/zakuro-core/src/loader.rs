@@ -359,6 +359,7 @@ fn map_code(system: &mut System, title: &Title) -> Result<bool, LoadError> {
     if let Some(decomp) = &decomp {
         system.decomp_module_hooks = decomp.module_hooks.clone();
         system.decomp_module_imports = decomp.module_imports.clone();
+        system.decomp_symbols = decomp.symbols.clone();
     }
     if let Some(decomp) = decomp.as_ref().filter(|_| !system.config.decomp_check) {
         decomp.patch(exheader.text.address, &mut code);

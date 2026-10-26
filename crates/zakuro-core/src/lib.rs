@@ -242,6 +242,7 @@ pub struct System {
     /// the decomp's functions of modules, hooked as each loads.
     pub decomp_module_hooks: Vec<decomp::ModuleHook>,
     pub decomp_module_imports: Vec<(String, u32, u32, Option<usize>)>,
+    pub decomp_symbols: std::collections::BTreeMap<String, u32>,
     /// where the title spends its time, by the place of the code, for
     /// 3dsrecomp build --hot.
     pub heat: Option<heat::Heat>,
@@ -327,6 +328,7 @@ impl System {
             decomp_check: None,
             decomp_module_hooks: Vec::new(),
             decomp_module_imports: Vec::new(),
+            decomp_symbols: Default::default(),
             heat: None,
             interpreted_instructions: 0,
             recompiled_instructions: 0,

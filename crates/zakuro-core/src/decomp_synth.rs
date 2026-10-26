@@ -340,7 +340,18 @@ pub fn synthesize(system: &mut System, romfs: &Path, runs: u32, seed: u64) -> (B
         let result: &mut Synthesized = results.entry(old).or_default();
         let class = classes.get(&old);
         result.objects = class.map_or(0, |(_, found)| found.len());
+        let started = std::time::Instant::now();
+        if std::env::var_os("ZAKURO_SYNTH_TRACE").is_some() {
+            eprintln!("synth trace: 0x{old:08X}");
+        }
         for i in 0..runs {
+            // the answer is in: it differs, or made-up inputs never get it
+            // to the end (the runs that hit the limit cost the most); and no
+            // function takes more than a few seconds of the whole run
+            if result.differ >= TOLD || (result.same == 0 && result.incomplete >= 16) || result.incomplete >= 64
+                || started.elapsed().as_secs() >= 5 {
+                break;
+            }
             let run_seed = mix(seed ^ (old as u64) << 20 ^ i as u64);
             let mut memory = Synth { memory: &mut system.memory, written: HashMap::new(), mapped: HashMap::new(), code: HashMap::new(), seed: run_seed, astray: false };
             let mut cpu = base_cpu.clone();

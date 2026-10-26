@@ -515,6 +515,19 @@ impl Memory {
 
     /// writes straight to physical memory, bypassing the page table and its
     /// permissions.
+    /// writes over code, whatever its pages allow the title: through the
+    /// mapping to the physical pages, as a loader patching it would.
+    pub fn write_code(&mut self, vaddr: VAddr, data: &[u8]) {
+        for (i, &byte) in data.iter().enumerate() {
+            let addr = vaddr.wrapping_add(i as u32);
+            let Some(paddr) = self.mapping_at(addr).map(|m| m.paddr + (addr - m.base)) else {
+                self.note_fault(addr);
+                continue;
+            };
+            self.write_physical(paddr, &[byte]);
+        }
+    }
+
     pub fn write_physical(&mut self, paddr: u32, data: &[u8]) -> bool {
         match self.phys.host_slice_mut(paddr, data.len() as u32) {
             Some(slice) => {

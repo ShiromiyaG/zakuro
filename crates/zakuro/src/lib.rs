@@ -27,7 +27,7 @@ use winit::window::{Fullscreen, Window, WindowId};
 
 use zakuro_common::Screen;
 use zakuro_core::{loader, Config, FrameOutcome, System};
-use zakuro_gpu::{layout, GpuScreen, Overlay, PresentError, RendererKind, ScreenImage};
+use zakuro_gpu::{layout, GpuScreen, Overlay, PresentError, RendererKind, ScreenImage, ScreenLayout};
 
 use gui::Gui;
 use input::Keyboard;
@@ -419,10 +419,22 @@ fn run_headless(
     let mut ran = 0;
     // a recording goes on from the frame a loaded state is at
     let first = system.frames;
+    // ZAKURO_PROGRESS=N: a line every N frames, for long runs
+    let progress = std::env::var("ZAKURO_PROGRESS").ok().and_then(|n| n.parse::<u64>().ok()).filter(|&n| n > 0);
     for frame in first..first + frames {
+        if let Some(every) = progress {
+            if (frame - first) % every == 0 && frame > first {
+                eprintln!("zakuro: frame {} of {} ({:.0} s)", frame - first, frames, start.elapsed().as_secs_f64());
+            }
+        }
         // a recording, ZAKURO_REPLAY, plays back here as in a window
         if let Some(replay) = replay.as_deref_mut() {
             system.set_input(replay.input(frame));
+        }
+        // ZAKURO_SINGLE_SCREEN: shown on one screen, as the top screen alone
+        // in a window
+        if std::env::var_os("ZAKURO_SINGLE_SCREEN").is_some() {
+            zakuro_core::decomp::set_single_screen(system, true);
         }
         outcome = system.run_frame();
         ran += 1;
@@ -482,18 +494,78 @@ fn run_headless(
     }
 }
 
+/// tells the decomp whether the top screen is shown alone, and gives the
+/// pieces of the bottom screen it asks to show over the top one then.
+fn single_screen(system: &mut System, alone: bool) -> Vec<zakuro_gpu::Panel> {
+    zakuro_core::decomp::set_single_screen(system, alone);
+    if !alone {
+        return Vec::new();
+    }
+    let fraction = |values: [i32; 4], width: f32, height: f32| {
+        [values[0] as f32 / width, values[1] as f32 / height, values[2] as f32 / width, values[3] as f32 / height]
+    };
+    zakuro_core::decomp::panels(system)
+        .into_iter()
+        .map(|panel| zakuro_gpu::Panel {
+            from: fraction(panel.from.map(i32::from), 320.0, 240.0),
+            to: fraction(panel.to.map(i32::from), 400.0, 240.0),
+        })
+        .collect()
+}
+
+/// the top screen with the decomp's panels drawn over it, nearest pixels,
+/// for screenshots of a headless run shown on one screen.
+fn compose_panels(top: &mut [u8], top_size: (u32, u32), bottom: &[u8], bottom_size: (u32, u32), panels: &[zakuro_core::decomp::Panel]) {
+    let (tw, th) = (top_size.0 as i32, top_size.1 as i32);
+    let (bw, bh) = (bottom_size.0 as i32, bottom_size.1 as i32);
+    // the pictures may be scaled up from the screens' own pixels
+    let (sx, sy) = (tw as f32 / 400.0, th as f32 / 240.0);
+    let (bx, by) = (bw as f32 / 320.0, bh as f32 / 240.0);
+    for panel in panels {
+        let [fx, fy, fw, fh] = panel.from.map(|v| v as f32);
+        let [x0, y0, w, h] = panel.to.map(|v| v as f32);
+        let (px0, py0, pw, ph) = ((x0 * sx) as i32, (y0 * sy) as i32, (w * sx) as i32, (h * sy) as i32);
+        for y in py0.max(0)..(py0 + ph).min(th) {
+            for x in px0.max(0)..(px0 + pw).min(tw) {
+                let u = ((fx + (x - px0) as f32 / pw as f32 * fw) * bx) as i32;
+                let v = ((fy + (y - py0) as f32 / ph as f32 * fh) * by) as i32;
+                if u < 0 || v < 0 || u >= bw || v >= bh {
+                    continue;
+                }
+                let from = ((v * bw + u) * 4) as usize;
+                let to = ((y * tw + x) * 4) as usize;
+                top[to..to + 4].copy_from_slice(&bottom[from..from + 4]);
+            }
+        }
+    }
+}
+
 /// saves both screens as dir/<frame>-top.png and -bottom.png, from the
-/// software rasterizer's pictures.
+/// software rasterizer's pictures; on one screen (--single-screen) also
+/// <frame>-single.png, the top one with the decomp's panels.
 fn save_screens(system: &mut System, dir: &Path, frame: u64) {
+    let mut pictures = Vec::new();
     for (screen, name) in [(Screen::Top, "top"), (Screen::Bottom, "bottom")] {
         let (pixels, width, height) = system.read_screen_scaled(screen);
-        let path = dir.join(format!("{frame:06}-{name}.png"));
-        let saved = image::RgbaImage::from_raw(width, height, pixels.to_vec())
-            .ok_or_else(|| "the picture is not the size it says".to_owned())
-            .and_then(|picture| picture.save(&path).map_err(|error| error.to_string()));
-        if let Err(error) = saved {
-            eprintln!("zakuro: could not save {}, {error}", path.display());
-        }
+        let pixels = pixels.to_vec();
+        save_picture(&dir.join(format!("{frame:06}-{name}.png")), &pixels, width, height);
+        pictures.push((pixels, width, height));
+    }
+    if std::env::var_os("ZAKURO_SINGLE_SCREEN").is_some() {
+        let panels = zakuro_core::decomp::panels(system);
+        let (bottom, bw, bh) = pictures.pop().expect("two pictures");
+        let (mut top, tw, th) = pictures.pop().expect("two pictures");
+        compose_panels(&mut top, (tw, th), &bottom, (bw, bh), &panels);
+        save_picture(&dir.join(format!("{frame:06}-single.png")), &top, tw, th);
+    }
+}
+
+fn save_picture(path: &Path, pixels: &[u8], width: u32, height: u32) {
+    let saved = image::RgbaImage::from_raw(width, height, pixels.to_vec())
+        .ok_or_else(|| "the picture is not the size it says".to_owned())
+        .and_then(|picture| picture.save(path).map_err(|error| error.to_string()));
+    if let Err(error) = saved {
+        eprintln!("zakuro: could not save {}, {error}", path.display());
     }
 }
 
@@ -1870,7 +1942,15 @@ impl App {
             None => (blank(Screen::Top), blank(Screen::Bottom), None),
         };
         let right = right.unwrap_or_else(|| blank(Screen::Top));
+        // the top screen alone: the decomp lays the bottom one out over it,
+        // in pieces it asks for
+        let alone = self.layout.screens() == ScreenLayout::TopOnly;
+        let panels = match &mut self.game {
+            Some(game) => single_screen(&mut game.system, alone),
+            None => Vec::new(),
+        };
         let Some(backend) = &mut self.backend else { return };
+        backend.set_panels(panels);
         let (((top, top_width, top_height), top_gpu), ((bottom, bottom_width, bottom_height), bottom_gpu)) = (top, bottom);
         let ((right, right_width, right_height), right_gpu) = right;
         let result = backend.present(
