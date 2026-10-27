@@ -420,9 +420,12 @@ pub(crate) fn compare(theirs: &Run, ours: &Run, caller: &Cpu, segment: (u32, u32
             // the ones a function has to give back as it found them
             let returned: &[(&str, bool, usize)] = match kind {
                 "void" => &[],
-                "long" => &[("r0", false, 0), ("r1", false, 1)],
-                "float" => &[("s0", true, 0)],
-                "double" => &[("s0", true, 0), ("s1", true, 1)],
+                // the game's calls are softfp: a float comes back in r0, a
+                // double in r0 and r1. its code ends `vmov r0, s0; bx lr`,
+                // so s0 holds the result too, and comparing s0 let C that
+                // returned it in the wrong register pass
+                "long" | "double" => &[("r0", false, 0), ("r1", false, 1)],
+                "float" => &[("r0", false, 0)],
                 _ => &[("r0", false, 0)],
             };
             let saved = (4..12).map(|r| (["r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11"][r - 4], false, r));
